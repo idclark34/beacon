@@ -85,6 +85,16 @@ class DB {
 
       CREATE INDEX IF NOT EXISTS idx_feed_unsurfaced
         ON feed_items(surfaced_at, relevance_score);
+
+      CREATE TABLE IF NOT EXISTS spend_snapshots (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        period      TEXT NOT NULL,
+        total_cost  REAL NOT NULL,
+        fetched_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_spend_period
+        ON spend_snapshots(period, fetched_at DESC);
     `);
   }
 
@@ -323,6 +333,64 @@ class DB {
     this.db.prepare(`
       DELETE FROM feed_items WHERE fetched_at < ?
     `).run(cutoff);
+  }
+
+  // ── Spend Snapshots ───────────────────────────────────────────────────────
+
+  saveSpendSnapshot(period, totalCost) {
+    this.db.prepare(
+      'INSERT INTO spend_snapshots (period, total_cost) VALUES (?, ?)'
+    ).run(period, totalCost);
+  }
+
+  getLatestSpendSnapshot(period) {
+    return this.db.prepare(`
+      SELECT * FROM spend_snapshots
+      WHERE period = ?
+      ORDER BY fetched_at DESC
+      LIMIT 1
+    `).get(period);
+  }
+
+  getSpendSnapshots(period) {
+    return this.db.prepare(`
+      SELECT * FROM spend_snapshots
+      WHERE period = ?
+      ORDER BY fetched_at ASC
+    `).all(period);
+  }
+
+  // ── New query methods ─────────────────────────────────────────────────────
+
+  getLastActivityTime() {
+    const row = this.db.prepare(`
+      SELECT timestamp FROM activity
+      WHERE event_type = 'active_coding'
+      ORDER BY timestamp DESC LIMIT 1
+    `).get();
+    return row ? row.timestamp : null;
+  }
+
+  getActiveProjectIds(hoursBack) {
+    const cutoff = new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString();
+    const rows = this.db.prepare(`
+      SELECT DISTINCT project_id FROM activity
+      WHERE event_type IN ('file_save', 'active_coding')
+        AND timestamp > ?
+    `).all(cutoff);
+    return rows.map(r => r.project_id);
+  }
+
+  getMultiProjectPattern(days) {
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    return this.db.prepare(`
+      SELECT project_id,
+        SUM(CASE WHEN event_type = 'commit' THEN 1 ELSE 0 END) as commit_events,
+        COUNT(DISTINCT date(timestamp)) as active_days
+      FROM activity
+      WHERE timestamp > ?
+      GROUP BY project_id
+    `).all(cutoff);
   }
 
   // ── Activity Summary (privacy-safe) ───────────────────────────────────────
