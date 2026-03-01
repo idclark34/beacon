@@ -5,18 +5,21 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage } = require('electron');
 
-const DB           = require('./services/database');
-const GitMonitor   = require('./services/git-monitor');
-const FileWatcher  = require('./services/file-watcher');
+const DB              = require('./services/database');
+const GitMonitor      = require('./services/git-monitor');
+const FileWatcher     = require('./services/file-watcher');
 const ActivityTracker = require('./services/activity-tracker');
-const AICharacter  = require('./services/ai-character');
-const AppTracker   = require('./services/app-tracker');
+const AICharacter     = require('./services/ai-character');
+const AppTracker      = require('./services/app-tracker');
+const InterestManager = require('./services/interest-manager');
+const FeedFetcher     = require('./services/feed-fetcher');
 
 // ── State ──────────────────────────────────────────────────────────────────
 
 let mainWindow = null;
 let tray = null;
 let db, gitMonitor, fileWatcher, activityTracker, aiCharacter, appTracker;
+let interestManager, feedFetcher;
 let activeProjectId = null;
 let checkInTimerId  = null;
 
@@ -146,6 +149,10 @@ async function initServices() {
   };
 
   activityTracker.start();
+
+  interestManager = new InterestManager(db);
+  feedFetcher = new FeedFetcher();
+  feedFetcher.start(db, interestManager, () => activeProjectId);
 }
 
 // ── Check-in ───────────────────────────────────────────────────────────────
@@ -160,6 +167,9 @@ function startCheckInTimer() {
 
     // Weekly recap — fires once per week if there's data
     if (await maybeShowWeeklyRecap()) return;
+
+    // High-relevance intel drop — fires when idle + high-score items waiting
+    if (await maybeShowIntelDrop()) return;
 
     // First-session intro — fires once after 10 active minutes
     if (await maybeShowIntroCheckIn()) return;
@@ -221,6 +231,34 @@ async function maybeShowWeeklyRecap() {
     mainWindow?.webContents.send('check-in-complete', message);
   } catch (err) {
     console.error('[Main] Weekly recap error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+  return true;
+}
+
+async function maybeShowIntelDrop() {
+  const lastDrop = db.getState('last_intel_drop_time');
+  if (lastDrop && (Date.now() - new Date(lastDrop)) < 2 * 60 * 60 * 1000) return false;
+
+  const items = db.getUnsurfacedFeedItems(7, 3);  // score >= 7 only
+  if (!items.length) return false;
+
+  const isIdle = !activityTracker.isRecentlyActive(activeProjectId, 3);
+  if (!isIdle) return false;
+
+  db.setState('last_intel_drop_time', new Date().toISOString());
+  db.markFeedItemsSurfaced(items.map(i => i.id));
+  showWindow();
+  mainWindow.webContents.send('check-in-start');
+  try {
+    const message = await aiCharacter.generateIntelDrop({
+      items,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+  } catch (err) {
+    console.error('[Main] Intel drop error:', err.message);
     mainWindow?.webContents.send('check-in-complete', '');
   }
   return true;
@@ -293,6 +331,23 @@ function setupIPC() {
 
   ipcMain.handle('show-window', () => showWindow());
   ipcMain.handle('hide-window', () => hideWindow());
+
+  // ── Interests & feeds ────────────────────────────────────────────────────
+  ipcMain.handle('get-interests', () => interestManager.getEffective(activeProjectId));
+  ipcMain.handle('set-interests', (_, topics) => interestManager.setManual(topics));
+  ipcMain.handle('get-feed-urls', () => {
+    const raw = db.getState('rss_feeds');
+    return raw ? JSON.parse(raw) : [];
+  });
+  ipcMain.handle('add-feed-url', (_, url) => {
+    const raw = db.getState('rss_feeds');
+    const existing = raw ? JSON.parse(raw) : [];
+    if (!existing.includes(url)) {
+      existing.push(url);
+      db.setState('rss_feeds', JSON.stringify(existing));
+    }
+    return existing;
+  });
 }
 
 // ── App lifecycle ──────────────────────────────────────────────────────────
@@ -319,4 +374,5 @@ app.on('before-quit', () => {
   appTracker?.stop();
   gitMonitor?.stopAll();
   fileWatcher?.stopAll();
+  feedFetcher?.stop();
 });

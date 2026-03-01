@@ -32,4 +32,10 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('reply-chunk',    (_, text) => cb({ type: 'chunk', text }));
     ipcRenderer.on('reply-complete', (_, msg)  => cb({ type: 'complete', message: msg }));
   },
+
+  // ── Interests & feed sources ──────────────────────────────────────────────
+  getInterests: ()         => ipcRenderer.invoke('get-interests'),
+  setInterests: (topics)   => ipcRenderer.invoke('set-interests', topics),
+  getFeedUrls:  ()         => ipcRenderer.invoke('get-feed-urls'),
+  addFeedUrl:   (url)      => ipcRenderer.invoke('add-feed-url', url),
 });

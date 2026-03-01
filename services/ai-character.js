@@ -87,7 +87,7 @@ class AICharacter {
     let fullResponse = '';
 
     const stream = client.messages.stream({
-      model: 'claude-opus-4-6',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 256,
       system,
       messages,
@@ -122,7 +122,7 @@ class AICharacter {
 
     let fullResponse = '';
     const stream = client.messages.stream({
-      model: 'claude-opus-4-6',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 80,
       system: CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[first check-in]", say one short casual thing to let them know you\'re around and you\'ve been watching. Don\'t say hello or hi. Don\'t introduce yourself formally. Just land — like you\'ve been in the room for a while and finally said something. One sentence max.',
       messages,
@@ -165,9 +165,63 @@ class AICharacter {
 
     let fullResponse = '';
     const stream = client.messages.stream({
-      model: 'claude-opus-4-6',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 180,
       system: CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[weekly recap]", give a brief 2-3 sentence reflection on the past week based on the data. What was the center of gravity? Was it a heavy week or light? Were they consistent or did they disappear for a few days? Speak like you were watching the whole time. Past tense. No bullet points. Casual, not formal.',
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  // ── Intel tool ─────────────────────────────────────────────────────────────
+
+  _intelTool() {
+    return {
+      name: 'get_recent_intel',
+      description: 'Get recent articles, discussions, or posts relevant to what Ian is working on. Use this when sharing something from the outside world would feel natural and timely. Returns up to 5 unsurfaced items with titles, sources, and brief descriptions.',
+      input_schema: { type: 'object', properties: {} },
+    };
+  }
+
+  _executeIntel() {
+    const items = this.db.getUnsurfacedFeedItems(3, 5);
+    if (!items.length) return 'No new intel right now.';
+    this.db.markFeedItemsSurfaced(items.map(i => i.id));
+    return items.map(i =>
+      `[${i.source}] ${i.title}${i.description ? ' — ' + i.description.slice(0, 120) : ''} (${i.url || 'no url'})`
+    ).join('\n');
+  }
+
+  /**
+   * Standalone intel drop — fires when high-relevance items are detected.
+   * Shorter, punchier format than a full check-in.
+   */
+  async generateIntelDrop({ items, onChunk }) {
+    const client = this._getClient();
+
+    const itemLines = items.map(i =>
+      `[${i.source}] ${i.title}${i.description ? ' — ' + i.description.slice(0, 120) : ''} (${i.url || 'no url'})`
+    ).join('\n');
+
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[intel drop]", you found something worth sharing. Surface it in 1-2 sentences in your voice — like texting a friend a link. Name the source, say why it\'s relevant to what they\'re building. Don\'t summarize the whole thing.';
+
+    const messages = [{
+      role: 'user',
+      content: `[intel drop]\n${itemLines}`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 120,
+      system,
       messages,
     });
 
@@ -278,50 +332,54 @@ class AICharacter {
     const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[checking in]", say one thing -- an observation or a question -- based on the context provided. React specifically to what you see. "Currently in" tells you what app is focused right now -- use it. If they\'re in a browser instead of their editor, that\'s worth a comment. "Past week" and "Files that keep coming up" give you longitudinal pattern -- use them to make observations that span days, not just today. If there were commits, mention them. You have a read_file tool -- use it when peeking inside a frequently-edited file would make your observation more specific and interesting. Skip it if file names already tell the story.';
 
     const userContent = `${trigger}${contextStr}`;
-    const tools = repoPath ? [this._peekTool()] : [];
+    const tools = [
+      this._intelTool(),
+      ...(repoPath ? [this._peekTool()] : []),
+    ];
 
-    // Phase 1: non-streaming — let Claude decide if it wants to peek
-    const firstResponse = await client.messages.create({
-      model: 'claude-opus-4-6',
-      max_tokens: 300,
-      system,
-      tools,
-      messages: [{ role: 'user', content: userContent }],
-    });
+    // Tool-call loop: handle up to 3 rounds of tool use, then stream final text
+    const messages = [{ role: 'user', content: userContent }];
+    let rounds = 0;
 
-    let messages;
+    while (rounds < 3) {
+      rounds++;
+      const response = await client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 300,
+        system,
+        tools,
+        messages,
+      });
 
-    if (firstResponse.stop_reason === 'tool_use') {
-      // Execute all tool calls
-      const toolResults = firstResponse.content
+      if (response.stop_reason !== 'tool_use') {
+        // Got text — emit and return (no streaming since we're done)
+        const text = response.content.find(b => b.type === 'text')?.text?.trim() || '';
+        if (onChunk && text) onChunk(text);
+        return text;
+      }
+
+      // Execute all tool calls in this round
+      const toolResults = response.content
         .filter(b => b.type === 'tool_use')
-        .map(b => ({
-          type: 'tool_result',
-          tool_use_id: b.id,
-          content: this._executePeek(b.input.path, repoPath),
-        }));
+        .map(b => {
+          if (b.name === 'get_recent_intel') {
+            console.log('[AICharacter] Pulling intel feed');
+            return { type: 'tool_result', tool_use_id: b.id, content: this._executeIntel() };
+          }
+          console.log(`[AICharacter] Peeking at: ${b.input.path}`);
+          return { type: 'tool_result', tool_use_id: b.id, content: this._executePeek(b.input.path, repoPath) };
+        });
 
-      console.log(`[AICharacter] Peeking at: ${firstResponse.content.filter(b => b.type === 'tool_use').map(b => b.input.path).join(', ')}`);
-
-      messages = [
-        { role: 'user', content: userContent },
-        { role: 'assistant', content: firstResponse.content },
-        { role: 'user', content: toolResults },
-      ];
-    } else {
-      // No tool call — emit the text directly and return
-      const text = firstResponse.content.find(b => b.type === 'text')?.text?.trim() || '';
-      if (onChunk && text) onChunk(text);
-      return text;
+      messages.push({ role: 'assistant', content: response.content });
+      messages.push({ role: 'user', content: toolResults });
     }
 
-    // Phase 2: stream the final response after tool results
+    // Exhausted tool rounds without text — stream a final answer without tools
     let fullResponse = '';
     const stream = client.messages.stream({
-      model: 'claude-opus-4-6',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 150,
       system,
-      tools,
       messages,
     });
 

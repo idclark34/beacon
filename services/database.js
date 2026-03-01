@@ -66,11 +66,25 @@ class DB {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
+      CREATE TABLE IF NOT EXISTS feed_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source TEXT NOT NULL,
+        title TEXT NOT NULL,
+        url TEXT UNIQUE,
+        description TEXT,
+        relevance_score REAL DEFAULT 0,
+        fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        surfaced_at TIMESTAMP
+      );
+
       CREATE INDEX IF NOT EXISTS idx_activity_project_time
         ON activity(project_id, timestamp);
 
       CREATE INDEX IF NOT EXISTS idx_conversations_project_time
         ON conversations(project_id, timestamp);
+
+      CREATE INDEX IF NOT EXISTS idx_feed_unsurfaced
+        ON feed_items(surfaced_at, relevance_score);
     `);
   }
 
@@ -270,6 +284,45 @@ class DB {
       .map(([filePath, saveCount]) => ({ filePath, saveCount }));
 
     return { days, totalCommits, activeHours, activeDays, topFiles };
+  }
+
+  // ── Feed Items ────────────────────────────────────────────────────────────
+
+  saveFeedItem({ source, title, url, description, score }) {
+    try {
+      const result = this.db.prepare(`
+        INSERT OR IGNORE INTO feed_items (source, title, url, description, relevance_score)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(source, title, url || null, description || null, score || 0);
+      return result.changes > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  getUnsurfacedFeedItems(minScore = 0, limit = 5) {
+    return this.db.prepare(`
+      SELECT * FROM feed_items
+      WHERE surfaced_at IS NULL AND relevance_score >= ?
+      ORDER BY relevance_score DESC, fetched_at DESC
+      LIMIT ?
+    `).all(minScore, limit);
+  }
+
+  markFeedItemsSurfaced(ids) {
+    if (!ids?.length) return;
+    const placeholders = ids.map(() => '?').join(', ');
+    this.db.prepare(`
+      UPDATE feed_items SET surfaced_at = CURRENT_TIMESTAMP
+      WHERE id IN (${placeholders})
+    `).run(...ids);
+  }
+
+  pruneOldFeedItems() {
+    const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    this.db.prepare(`
+      DELETE FROM feed_items WHERE fetched_at < ?
+    `).run(cutoff);
   }
 
   // ── Activity Summary (privacy-safe) ───────────────────────────────────────
