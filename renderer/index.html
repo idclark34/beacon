@@ -10,142 +10,43 @@
 </head>
 <body>
   <div id="app">
-    <!-- Titlebar -->
-    <div id="titlebar">
-      <div id="titlebar-left">
-        <div class="avatar" id="avatar">OC</div>
-        <div id="title-info">
-          <span id="app-title">Outpost Companion</span>
-          <span id="project-label">no project</span>
+
+    <!-- Onboarding (first run only) -->
+    <div id="onboarding" class="screen">
+      <div id="ob-header">
+        <div class="avatar">OC</div>
+        <div>
+          <div class="ob-title">Outpost Companion</div>
+          <div class="ob-sub">I'll watch while you build.</div>
         </div>
       </div>
-      <div id="titlebar-controls">
-        <button class="ctrl-btn" id="btn-minimize" title="Minimize">—</button>
-        <button class="ctrl-btn" id="btn-close" title="Hide">×</button>
+      <div class="field-group">
+        <label>What are you working on?</label>
+        <input id="ob-name" class="field" type="text" placeholder="e.g. Outpost landing page" maxlength="80" />
+      </div>
+      <div class="field-group">
+        <label>Repo path <span class="optional">(optional)</span></label>
+        <input id="ob-path" class="field" type="text" placeholder="/Users/you/projects/outpost" maxlength="500" />
+      </div>
+      <button id="ob-submit" class="btn-go">Start watching →</button>
+    </div>
+
+    <!-- Popup (the main experience) -->
+    <div id="popup" class="screen hidden">
+      <div id="popup-drag">
+        <div class="avatar small" id="popup-avatar">OC</div>
+        <div id="popup-project"></div>
+        <button id="popup-dismiss" title="Dismiss">×</button>
+      </div>
+      <div id="popup-message">
+        <span id="popup-text"></span><span id="popup-cursor" class="cursor hidden"></span>
+      </div>
+      <div id="popup-reply-area" class="hidden">
+        <input id="popup-reply" class="field" type="text" placeholder="Reply..." maxlength="500" />
       </div>
     </div>
 
-    <!-- Onboarding view -->
-    <div class="view active" id="onboarding">
-      <h2>Hey 👋 Let's get set up.</h2>
-      <p>Tell me what you're building so I can actually pay attention.</p>
-
-      <div class="form-group">
-        <label>Project name</label>
-        <input
-          type="text"
-          id="project-name"
-          class="form-input"
-          placeholder="e.g. Outpost landing page"
-          maxlength="80"
-        />
-      </div>
-
-      <div class="form-group">
-        <label>Git repo path (optional)</label>
-        <input
-          type="text"
-          id="repo-path"
-          class="form-input"
-          placeholder="/Users/you/projects/outpost"
-          maxlength="500"
-        />
-      </div>
-
-      <div class="form-group">
-        <label>This week's goal (optional)</label>
-        <input
-          type="text"
-          id="first-goal"
-          class="form-input"
-          placeholder="e.g. Ship the landing page"
-          maxlength="200"
-        />
-      </div>
-
-      <button class="btn-primary" id="setup-btn">Let's go →</button>
-    </div>
-
-    <!-- Main chat view -->
-    <div class="view" id="chat-view">
-      <!-- Toolbar -->
-      <div id="toolbar">
-        <div id="activity-pill">no activity yet</div>
-        <div id="toolbar-actions">
-          <button class="tool-btn" id="goal-btn" title="This week's goals">goals</button>
-          <button class="tool-btn" id="project-btn" title="Add project">+ project</button>
-        </div>
-      </div>
-
-      <!-- Messages -->
-      <div id="messages">
-        <div id="empty-state">
-          <div class="oc-big">OC</div>
-          <p>I'm watching. Say something or I'll check in when you've been grinding for a while.</p>
-        </div>
-      </div>
-
-      <!-- Input -->
-      <div id="input-area">
-        <div id="input-row">
-          <textarea
-            id="message-input"
-            placeholder="Say something..."
-            rows="1"
-            maxlength="2000"
-          ></textarea>
-          <button id="send-btn" title="Send (Enter)">↑</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Goal modal (overlay) -->
-    <div id="goal-modal">
-      <div id="goal-modal-inner">
-        <h3>This week's goals</h3>
-        <div id="goal-list">
-          <div class="goal-item" style="color:var(--text-dim); padding:8px 0; border:none;">No goals set yet.</div>
-        </div>
-        <div id="goal-input-row">
-          <input
-            type="text"
-            id="new-goal-input"
-            class="form-input"
-            placeholder="Add a goal..."
-            maxlength="200"
-          />
-          <button class="btn-primary" id="add-goal-btn" style="width:auto; padding:6px 12px;">Add</button>
-        </div>
-        <button class="btn-secondary" id="close-goal-modal">Done</button>
-      </div>
-    </div>
-
-    <!-- Add project modal -->
-    <div id="add-project-modal" style="
-      display:none; position:absolute; inset:0;
-      background:rgba(0,0,0,0.7); z-index:100;
-      align-items:center; justify-content:center; padding:20px;
-    ">
-      <div style="
-        background:var(--bg-elevated); border:1px solid var(--border);
-        border-radius:var(--radius); padding:16px; width:100%;
-        display:flex; flex-direction:column; gap:10px;
-      ">
-        <h3 style="font-size:13px;font-weight:600;">Add project</h3>
-        <div class="form-group">
-          <label>Name</label>
-          <input type="text" id="new-proj-name" class="form-input" placeholder="Project name" maxlength="80" />
-        </div>
-        <div class="form-group">
-          <label>Repo path</label>
-          <input type="text" id="new-proj-path" class="form-input" placeholder="/path/to/repo" maxlength="500" />
-        </div>
-        <button class="btn-primary" id="save-project-btn">Add project</button>
-        <button class="btn-secondary" id="close-project-modal">Cancel</button>
-      </div>
-    </div>
   </div>
-
   <script src="app.js"></script>
 </body>
 </html>
