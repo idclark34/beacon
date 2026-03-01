@@ -106,31 +106,40 @@ class AICharacter {
    */
   async generateCheckIn({ projectId, onChunk }) {
     const client = this._getClient();
-    const contextBlock = this._buildContextBlock(projectId);
-    const system = CHARACTER_SYSTEM_PROMPT + contextBlock;
+    const summary = projectId ? this.db.getActivitySummary(projectId, 24) : null;
 
-    // Get recent conversation for context
-    const recentConvos = projectId
-      ? this.db.getConversations(projectId, 6)
-      : this.db.getAllConversations(6);
+    const contextLines = [];
+    if (summary?.project) contextLines.push(`Project: ${summary.project}`);
+    if (summary?.totalCommits > 0) {
+      const files = summary.filePaths.slice(0, 3).join(', ');
+      contextLines.push(`NEW COMMITS: ${summary.totalCommits} commit${summary.totalCommits !== 1 ? 's' : ''} just pushed${files ? ` — files: ${files}` : ''}`);
+    }
+    if (summary?.activeMinutes > 0) {
+      contextLines.push(`Active coding: ${(summary.activeMinutes / 60).toFixed(1)}h`);
+    }
+    if (summary?.goals?.length > 0) {
+      contextLines.push(`Goals: ${summary.goals.join('; ')}`);
+    }
 
-    const messages = recentConvos.map(msg => ({
-      role: msg.sender === 'user' ? 'user' : 'assistant',
-      content: msg.message,
-    }));
+    const contextStr = contextLines.length > 0
+      ? `\n\nWhat you know right now:\n${contextLines.join('\n')}`
+      : '';
 
-    // The check-in trigger: character is waking up to see what's happening
-    messages.push({
+    const trigger = summary?.totalCommits > 0
+      ? `[${summary.totalCommits} new commit${summary.totalCommits !== 1 ? 's' : ''} detected]`
+      : '[checking in]';
+
+    const messages = [{
       role: 'user',
-      content: '[checking in]',
-    });
+      content: `${trigger}${contextStr}`,
+    }];
 
     let fullResponse = '';
 
     const stream = client.messages.stream({
       model: 'claude-opus-4-6',
       max_tokens: 150,
-      system: system + '\n\nWhen you see "[checking in]", generate a spontaneous check-in -- what would you naturally say after watching them work for a while? React to what you know.',
+      system: CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[checking in]", say one thing -- an observation or a question -- based on the context provided. React specifically to what you see. If there were commits, mention them.',
       messages,
     });
 

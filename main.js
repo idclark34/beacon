@@ -104,7 +104,7 @@ function createTray() {
     { label: 'Quit', click: () => app.quit() },
   ]);
   tray.setContextMenu(menu);
-  tray.on('click', () => triggerCheckIn());
+  tray.on('click', () => tray.popUpContextMenu());
 }
 
 // ── Services ───────────────────────────────────────────────────────────────

@@ -111,10 +111,11 @@ class GitMonitor {
   /**
    * Manually trigger a scan right now for a project.
    */
-  async scanNow(projectId) {
+  async scanNow(projectId, hoursBack = 2) {
     const watcher = this.watchers.get(projectId);
     if (!watcher) return;
-    await this._scanRepo(projectId, watcher.git, watcher.lastChecked);
+    const since = new Date(Date.now() - hoursBack * 60 * 60 * 1000);
+    await this._scanRepo(projectId, watcher.git, since);
     watcher.lastChecked = new Date();
   }
 }
