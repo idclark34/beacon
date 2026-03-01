@@ -33,14 +33,18 @@
 
     <!-- Popup (the main experience) -->
     <div id="popup" class="screen hidden">
-      <div id="popup-drag">
-        <div class="avatar small" id="popup-avatar">OC</div>
-        <div id="popup-project"></div>
+      <div id="popup-top">
+        <div id="popup-badge"><span id="popup-dot"></span>OC</div>
         <button id="popup-dismiss" title="Dismiss">×</button>
       </div>
       <div id="popup-message">
         <span id="popup-text"></span><span id="popup-cursor" class="cursor hidden"></span>
       </div>
+      <div id="chat-area">
+        <input id="chat-input" type="text" placeholder="say something…"
+               maxlength="300" autocomplete="off" spellcheck="false" />
+      </div>
+      <div id="countdown-wrap"><div id="countdown-bar"></div></div>
     </div>
 
   </div>

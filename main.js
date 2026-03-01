@@ -10,12 +10,13 @@ const GitMonitor   = require('./services/git-monitor');
 const FileWatcher  = require('./services/file-watcher');
 const ActivityTracker = require('./services/activity-tracker');
 const AICharacter  = require('./services/ai-character');
+const AppTracker   = require('./services/app-tracker');
 
 // ── State ──────────────────────────────────────────────────────────────────
 
 let mainWindow = null;
 let tray = null;
-let db, gitMonitor, fileWatcher, activityTracker, aiCharacter;
+let db, gitMonitor, fileWatcher, activityTracker, aiCharacter, appTracker;
 let activeProjectId = null;
 let checkInTimerId  = null;
 
@@ -26,12 +27,14 @@ function createWindow() {
 
   mainWindow = new BrowserWindow({
     width: 320,
-    height: 180,      // compact — just the popup card
+    height: 260,      // compact — just the popup card
     x: width - 340,
     y: height - 200,
     alwaysOnTop: true,
     frame: false,
     transparent: true,
+    vibrancy: 'under-window',
+    visualEffectState: 'active',
     resizable: false,
     show: false,      // hidden until there's something to say
     skipTaskbar: true,
@@ -65,6 +68,7 @@ function createWindow() {
 
 function showWindow() {
   if (!mainWindow) return;
+  mainWindow.webContents.send('window-show'); // trigger entry animation before paint
   mainWindow.showInactive(); // don't steal focus
 }
 
@@ -112,7 +116,9 @@ function createTray() {
 async function initServices() {
   db           = new DB();
   db.initialize();
-  aiCharacter  = new AICharacter(db);
+  appTracker   = new AppTracker();
+  appTracker.start();
+  aiCharacter  = new AICharacter(db, appTracker);
   gitMonitor   = new GitMonitor(db);
   fileWatcher  = new FileWatcher(db);
   activityTracker = new ActivityTracker(db, fileWatcher);
@@ -145,13 +151,20 @@ async function initServices() {
 // ── Check-in ───────────────────────────────────────────────────────────────
 
 const CHECK_POLL_MS         = 5 * 60 * 1000;  // poll every 5 min
-const ACTIVE_THRESHOLD_MIN  = 120;             // 2h of activity since last check-in
-const IDLE_GATE_MIN         = 5;               // wait for 5 min idle before popping up
+const ACTIVE_THRESHOLD_MIN  = 30;             // 30 min of activity since last check-in
+const IDLE_GATE_MIN         = 3;              // wait for 3 min idle before popping up
 
 function startCheckInTimer() {
   checkInTimerId = setInterval(async () => {
     if (!activeProjectId || !mainWindow) return;
 
+    // Weekly recap — fires once per week if there's data
+    if (await maybeShowWeeklyRecap()) return;
+
+    // First-session intro — fires once after 10 active minutes
+    if (await maybeShowIntroCheckIn()) return;
+
+    // Regular check-in
     const lastCheckIn   = db.getState('last_checkin_time');
     const since         = lastCheckIn ? new Date(lastCheckIn) : new Date(0);
     const activeMinutes = db.getActiveMinutesSince(activeProjectId, since);
@@ -163,6 +176,56 @@ function startCheckInTimer() {
   }, CHECK_POLL_MS);
 }
 
+async function maybeShowIntroCheckIn() {
+  if (db.getState('intro_shown')) return false;
+  const activeMinutes = db.getActiveMinutesSince(activeProjectId, new Date(0));
+  if (activeMinutes < 10) return false;
+
+  db.setState('intro_shown', 'true');
+  db.setState('last_checkin_time', new Date().toISOString());
+  showWindow();
+  mainWindow.webContents.send('check-in-start');
+  try {
+    const message = await aiCharacter.generateIntroCheckIn({
+      projectId: activeProjectId,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+  } catch (err) {
+    console.error('[Main] Intro check-in error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', "Hey, I'm here.");
+  }
+  return true;
+}
+
+async function maybeShowWeeklyRecap() {
+  const lastRecap = db.getState('last_recap_date');
+  if (lastRecap) {
+    const daysSince = (Date.now() - new Date(lastRecap)) / (1000 * 60 * 60 * 24);
+    if (daysSince < 7) return false;
+  }
+  const weekSummary = db.getMultiDaySummary(activeProjectId, 7);
+  if (weekSummary.totalCommits === 0 && weekSummary.activeHours === 0) return false;
+
+  db.setState('last_recap_date', new Date().toISOString());
+  db.setState('last_checkin_time', new Date().toISOString());
+  showWindow();
+  mainWindow.webContents.send('check-in-start');
+  try {
+    const message = await aiCharacter.generateWeeklyRecap({
+      projectId: activeProjectId,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+  } catch (err) {
+    console.error('[Main] Weekly recap error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+  return true;
+}
+
 function scheduleCheckIn(delayMs = 0) {
   setTimeout(triggerCheckIn, delayMs);
 }
@@ -171,8 +234,8 @@ async function triggerCheckIn() {
   if (!mainWindow || !activeProjectId) return;
 
   db.setState('last_checkin_time', new Date().toISOString());
-  mainWindow.webContents.send('check-in-start');
   showWindow();
+  mainWindow.webContents.send('check-in-start');
 
   try {
     const message = await aiCharacter.generateCheckIn({
@@ -202,11 +265,31 @@ function setupIPC() {
     activeProjectId = project.id;
     db.setState('active_project_id', project.id);
     // Resize to popup height after onboarding completes
-    mainWindow?.setSize(320, 180);
+    mainWindow?.setSize(320, 260);
     return project;
   });
 
   ipcMain.handle('trigger-check-in', () => triggerCheckIn());
+
+  ipcMain.handle('send-message', async (_, userMessage) => {
+    if (!mainWindow || !activeProjectId) return;
+    mainWindow.webContents.send('reply-start');
+    try {
+      const history = db.getConversations(activeProjectId, 12); // oldest-first
+      const reply = await aiCharacter.respond({
+        userMessage,
+        projectId: activeProjectId,
+        conversationHistory: history,
+        onChunk: (chunk) => mainWindow?.webContents.send('reply-chunk', chunk),
+      });
+      db.saveConversation(activeProjectId, userMessage, 'user');
+      db.saveConversation(activeProjectId, reply, 'character');
+      mainWindow?.webContents.send('reply-complete', reply);
+    } catch (err) {
+      console.error('[Main] Reply error:', err.message);
+      mainWindow?.webContents.send('reply-complete', '');
+    }
+  });
 
   ipcMain.handle('show-window', () => showWindow());
   ipcMain.handle('hide-window', () => hideWindow());
@@ -233,6 +316,7 @@ app.on('activate', () => {
 app.on('before-quit', () => {
   if (checkInTimerId) clearInterval(checkInTimerId);
   activityTracker?.stop();
+  appTracker?.stop();
   gitMonitor?.stopAll();
   fileWatcher?.stopAll();
 });

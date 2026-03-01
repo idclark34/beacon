@@ -210,6 +210,68 @@ class DB {
     `).run(key, String(value));
   }
 
+  getHotFiles(projectId, hoursBack = 8, limit = 3) {
+    const cutoff = new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString();
+    const rows = this.db.prepare(`
+      SELECT metadata FROM activity
+      WHERE project_id = ? AND event_type = 'file_save' AND timestamp > ?
+    `).all(projectId, cutoff);
+    const counts = new Map();
+    for (const row of rows) {
+      try {
+        const { path } = JSON.parse(row.metadata || '{}');
+        if (path) counts.set(path, (counts.get(path) || 0) + 1);
+      } catch {}
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([filePath, saveCount]) => ({ filePath, saveCount }));
+  }
+
+  getMultiDaySummary(projectId, days = 7) {
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+    const commitRows = this.db.prepare(`
+      SELECT metadata FROM activity
+      WHERE project_id = ? AND event_type = 'commit' AND timestamp > ?
+    `).all(projectId, cutoff);
+    const totalCommits = commitRows.reduce((sum, row) => {
+      try { return sum + (JSON.parse(row.metadata || '{}').count || 0); }
+      catch { return sum; }
+    }, 0);
+
+    const activeCount = this.db.prepare(`
+      SELECT COUNT(*) as cnt FROM activity
+      WHERE project_id = ? AND event_type = 'active_coding' AND timestamp > ?
+    `).get(projectId, cutoff);
+    const activeHours = Math.round(((activeCount?.cnt || 0) * 5) / 60 * 10) / 10;
+
+    const activeDaysRow = this.db.prepare(`
+      SELECT COUNT(DISTINCT date(timestamp)) as cnt FROM activity
+      WHERE project_id = ? AND event_type = 'active_coding' AND timestamp > ?
+    `).get(projectId, cutoff);
+    const activeDays = activeDaysRow?.cnt || 0;
+
+    const fileRows = this.db.prepare(`
+      SELECT metadata FROM activity
+      WHERE project_id = ? AND event_type = 'file_save' AND timestamp > ?
+    `).all(projectId, cutoff);
+    const fileCounts = new Map();
+    for (const row of fileRows) {
+      try {
+        const { path } = JSON.parse(row.metadata || '{}');
+        if (path) fileCounts.set(path, (fileCounts.get(path) || 0) + 1);
+      } catch {}
+    }
+    const topFiles = [...fileCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([filePath, saveCount]) => ({ filePath, saveCount }));
+
+    return { days, totalCommits, activeHours, activeDays, topFiles };
+  }
+
   // ── Activity Summary (privacy-safe) ───────────────────────────────────────
 
   getActivitySummary(projectId, hoursBack = 24) {
@@ -222,6 +284,7 @@ class DB {
 
     // Collect unique file paths touched (privacy-safe: relative paths only)
     const filePaths = new Set();
+    const allSubjects = [];
     commits.forEach(c => {
       try {
         const meta = JSON.parse(c.metadata || '{}');
@@ -232,6 +295,7 @@ class DB {
             filePaths.add(relPath);
           });
         }
+        if (Array.isArray(meta.subjects)) allSubjects.push(...meta.subjects);
       } catch {}
     });
 
@@ -265,6 +329,7 @@ class DB {
       totalCommits,
       activeMinutes,
       filePaths: [...filePaths],
+      subjects: allSubjects,
       summary: summary || 'No recent activity',
       goals: goals.map(g => g.goal_text),
     };

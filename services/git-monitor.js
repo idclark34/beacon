@@ -2,7 +2,7 @@
 
 const { simpleGit } = require('simple-git');
 
-const POLL_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const SIGNIFICANT_COMMIT_THRESHOLD = 1;
 
 class GitMonitor {
@@ -92,9 +92,14 @@ class GitMonitor {
         }
       }
 
+      const subjects = log.all
+        .map(c => (c.message || '').split('\n')[0].trim().slice(0, 80))
+        .filter(s => s.length > 0);
+
       const metadata = {
         count: commitCount,
         changedFiles: [...changedFiles].slice(0, 20), // cap for privacy/storage
+        subjects,
       };
 
       this.db.logActivity(projectId, 'commit', metadata);
