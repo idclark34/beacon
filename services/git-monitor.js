@@ -60,9 +60,10 @@ class GitMonitor {
         return;
       }
 
-      // Get commits since last check
-      const sinceISO = since.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
-      const log = await git.log({ '--since': sinceISO });
+      // Get commits since last check — use Unix timestamp to avoid timezone issues
+      const sinceUnix = Math.floor(since.getTime() / 1000);
+      const log = await git.log({ '--since': String(sinceUnix) });
+      console.log(`[GitMonitor] Project ${projectId}: scanning since ${since.toISOString()}, found ${log.all.length} commits`);
 
       if (!log.all.length) return;
 
