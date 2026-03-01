@@ -289,6 +289,43 @@ class AICharacter {
     return fullResponse.trim();
   }
 
+  // ── Secret alert ───────────────────────────────────────────────────────────
+
+  /**
+   * Fires when a commit appears to contain credentials or secret keys.
+   * Urgent, no sugarcoating.
+   */
+  async generateSecretAlert({ findings, commitHash, onChunk }) {
+    const client = this._getClient();
+
+    const findingLines = findings.map(f =>
+      `${f.pattern} in ${f.file} (starts with: ${f.preview})`
+    ).join('\n');
+
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [secret alert], you spotted what looks like a credential or API key in a commit that just got pushed. This is urgent — surface it in 1-2 sentences. Name the file, what type of secret it looks like, and that they should rotate it immediately. No sugarcoating.';
+
+    const messages = [{
+      role: 'user',
+      content: `[secret alert] commit ${commitHash}\n${findingLines}`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 120,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
   // ── Dep alert ──────────────────────────────────────────────────────────────
 
   /**

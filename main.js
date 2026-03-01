@@ -14,13 +14,14 @@ const AppTracker      = require('./services/app-tracker');
 const InterestManager = require('./services/interest-manager');
 const FeedFetcher     = require('./services/feed-fetcher');
 const DepMonitor      = require('./services/dep-monitor');
+const SecretScanner   = require('./services/secret-scanner');
 
 // ── State ──────────────────────────────────────────────────────────────────
 
 let mainWindow = null;
 let tray = null;
 let db, gitMonitor, fileWatcher, activityTracker, aiCharacter, appTracker;
-let interestManager, feedFetcher, depMonitor;
+let interestManager, feedFetcher, depMonitor, secretScanner;
 let activeProjectId = null;
 let checkInTimerId  = null;
 
@@ -164,6 +165,17 @@ async function initServices() {
     if (last && Date.now() - new Date(last) < 24 * 60 * 60 * 1000) return;
     if (projectId === activeProjectId) triggerDepAlert(projectId, issues);
   };
+
+  secretScanner = new SecretScanner();
+  for (const project of db.getProjects()) {
+    if (project.repo_path) secretScanner.watchProject(project.id, project.repo_path);
+  }
+  secretScanner.onSecretsFound = (projectId, findings, commitHash) => {
+    // 1hr cooldown — still urgent, just don't spam on rapid commits
+    const last = db.getState('last_secret_alert_time');
+    if (last && Date.now() - new Date(last) < 60 * 60 * 1000) return;
+    triggerSecretAlert(projectId, findings, commitHash);
+  };
 }
 
 // ── Check-in ───────────────────────────────────────────────────────────────
@@ -299,6 +311,25 @@ async function triggerCheckIn() {
   }
 }
 
+async function triggerSecretAlert(projectId, findings, commitHash) {
+  if (!mainWindow) return;
+  db.setState('last_secret_alert_time', new Date().toISOString());
+  showWindow();
+  mainWindow.webContents.send('check-in-start');
+  try {
+    const message = await aiCharacter.generateSecretAlert({
+      findings,
+      commitHash,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(projectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+  } catch (err) {
+    console.error('[Main] Secret alert error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
 async function triggerDepAlert(projectId, issues) {
   if (!mainWindow) return;
   db.setState('last_dep_alert_time', new Date().toISOString());
@@ -329,6 +360,7 @@ function setupIPC() {
       fileWatcher.watchDirectory(project.id, repo_path);
       gitMonitor.watchRepo(project.id, repo_path);
       depMonitor.watchProject(project.id, repo_path);
+      secretScanner.watchProject(project.id, repo_path);
     }
     activeProjectId = project.id;
     db.setState('active_project_id', project.id);
@@ -406,4 +438,5 @@ app.on('before-quit', () => {
   fileWatcher?.stopAll();
   feedFetcher?.stop();
   depMonitor?.stopAll();
+  secretScanner?.stopAll();
 });
