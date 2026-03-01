@@ -20,6 +20,7 @@ const SpendTracker    = require('./services/spend-tracker');
 // ── State ──────────────────────────────────────────────────────────────────
 
 let mainWindow = null;
+let settingsWindow = null;
 let tray = null;
 let db, gitMonitor, fileWatcher, activityTracker, aiCharacter, appTracker;
 let interestManager, feedFetcher, depMonitor, secretScanner, spendTracker;
@@ -83,6 +84,36 @@ function hideWindow() {
   mainWindow?.hide();
 }
 
+// ── Settings window ─────────────────────────────────────────────────────────
+
+function openSettings() {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.focus();
+    return;
+  }
+
+  settingsWindow = new BrowserWindow({
+    width: 320,
+    height: 240,
+    resizable: false,
+    frame: false,
+    transparent: true,
+    vibrancy: 'under-window',
+    visualEffectState: 'active',
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  settingsWindow.loadFile(path.join(__dirname, 'renderer', 'settings.html'));
+  settingsWindow.on('closed', () => { settingsWindow = null; });
+}
+
 // ── Tray ───────────────────────────────────────────────────────────────────
 
 function createTray() {
@@ -111,6 +142,8 @@ function createTray() {
         await gitMonitor.scanNow(projectId);
       }
     }},
+    { type: 'separator' },
+    { label: 'Settings', click: () => openSettings() },
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() },
   ]);
@@ -437,7 +470,13 @@ async function triggerCheckIn() {
   showWindow();
   mainWindow.webContents.send('check-in-start');
 
-  const imageBase64 = await captureFrame().catch(() => null);
+  const camRaw = db.getState('camera_settings');
+  const camSettings = camRaw ? (() => { try { return JSON.parse(camRaw); } catch { return {}; } })() : {};
+  const camEnabled = camSettings.enabled !== false;
+  const camAfterHour = camSettings.afterHour ?? null;
+  const currentHour = new Date().getHours();
+  const withinWindow = camAfterHour === null || currentHour >= camAfterHour;
+  const imageBase64 = (camEnabled && withinWindow) ? await captureFrame().catch(() => null) : null;
 
   try {
     const message = await aiCharacter.generateCheckIn({
@@ -666,6 +705,21 @@ function setupIPC() {
     }
     return existing;
   });
+
+  // ── Camera settings ────────────────────────────────────────────────────────
+  ipcMain.handle('get-camera-settings', () => {
+    const raw = db.getState('camera_settings');
+    try { return raw ? JSON.parse(raw) : { enabled: true, afterHour: null }; }
+    catch { return { enabled: true, afterHour: null }; }
+  });
+
+  ipcMain.handle('set-camera-settings', (_, settings) => {
+    db.setState('camera_settings', JSON.stringify(settings));
+  });
+
+  ipcMain.handle('close-settings', () => {
+    settingsWindow?.close();
+  });
 }
 
 // ── App lifecycle ──────────────────────────────────────────────────────────
@@ -696,4 +750,5 @@ app.on('before-quit', () => {
   depMonitor?.stopAll();
   secretScanner?.stopAll();
   spendTracker?.stop();
+  settingsWindow?.close();
 });

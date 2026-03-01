@@ -37,6 +37,11 @@ contextBridge.exposeInMainWorld('api', {
   onCaptureFrame: (cb) => ipcRenderer.on('capture-frame', () => cb()),
   sendFrame:      (b64) => ipcRenderer.send('frame-captured', b64),
 
+  // ── Settings ──────────────────────────────────────────────────────────────
+  getCameraSettings: ()       => ipcRenderer.invoke('get-camera-settings'),
+  setCameraSettings: (s)      => ipcRenderer.invoke('set-camera-settings', s),
+  closeSettings:     ()       => ipcRenderer.invoke('close-settings'),
+
   // ── Interests & feed sources ──────────────────────────────────────────────
   getInterests: ()         => ipcRenderer.invoke('get-interests'),
   setInterests: (topics)   => ipcRenderer.invoke('set-interests', topics),
