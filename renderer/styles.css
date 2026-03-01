@@ -139,13 +139,3 @@ html, body {
   0%,100% { opacity: 1; }
   50%      { opacity: 0; }
 }
-
-#popup-reply-area {
-  display: flex;
-  gap: 0;
-}
-#popup-reply {
-  flex: 1;
-  font-size: 12px;
-  padding: 6px 10px;
-}

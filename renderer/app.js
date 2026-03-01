@@ -2,10 +2,6 @@
 
 const $ = id => document.getElementById(id);
 
-// ── State ──────────────────────────────────────────────────────────────────
-
-let isStreaming = false;
-
 // ── Init ───────────────────────────────────────────────────────────────────
 
 async function init() {
@@ -40,12 +36,9 @@ function showPopup(project) {
 // ── Streaming helpers ──────────────────────────────────────────────────────
 
 function startStream() {
-  isStreaming = true;
   $('popup-text').textContent = '';
   $('popup-cursor').classList.remove('hidden');
   $('popup-avatar').classList.add('pulsing');
-  $('popup-reply-area').classList.add('hidden');
-  $('popup-reply').value = '';
 }
 
 function appendChunk(text) {
@@ -53,18 +46,13 @@ function appendChunk(text) {
 }
 
 function endStream() {
-  isStreaming = false;
   $('popup-cursor').classList.add('hidden');
   $('popup-avatar').classList.remove('pulsing');
-  // Show reply field after message appears
-  $('popup-reply-area').classList.remove('hidden');
-  $('popup-reply').focus();
 }
 
 // ── IPC Listeners ──────────────────────────────────────────────────────────
 
 function setupIPCListeners() {
-  // Check-in: character initiates
   window.api.onCheckIn(({ type, text }) => {
     if (type === 'start') {
       startStream();
@@ -74,14 +62,6 @@ function setupIPCListeners() {
     } else if (type === 'complete') {
       endStream();
     }
-  });
-
-  // Reply response (after user types something)
-  window.api.onMessageChunk(text => appendChunk(text));
-  window.api.onMessageComplete(() => endStream());
-  window.api.onMessageError(err => {
-    $('popup-text').textContent = err;
-    endStream();
   });
 }
 
@@ -93,22 +73,10 @@ function setupListeners() {
   $('ob-path').addEventListener('keydown', e => { if (e.key === 'Enter') handleSetup(); });
   $('ob-name').addEventListener('keydown', e => { if (e.key === 'Enter') $('ob-path').focus(); });
 
-  // Dismiss popup
-  $('popup-dismiss').addEventListener('click', () => {
-    window.api.hideWindow();
-  });
-
-  // Reply input: Enter sends, Escape dismisses
-  $('popup-reply').addEventListener('keydown', async e => {
-    if (e.key === 'Escape') {
-      window.api.hideWindow();
-    } else if (e.key === 'Enter') {
-      const text = $('popup-reply').value.trim();
-      if (!text || isStreaming) return;
-      $('popup-reply').value = '';
-      startStream();
-      await window.api.sendMessage(text);
-    }
+  // Dismiss popup on × or Escape
+  $('popup-dismiss').addEventListener('click', () => window.api.hideWindow());
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') window.api.hideWindow();
   });
 }
 
@@ -125,7 +93,6 @@ async function handleSetup() {
       repo_path: $('ob-path').value.trim() || null,
     });
     showPopup(project);
-    // Trigger an immediate first check-in
     await window.api.triggerCheckIn();
   } catch (err) {
     $('ob-submit').textContent = 'Error — try again';

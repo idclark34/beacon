@@ -3,7 +3,7 @@
 const { simpleGit } = require('simple-git');
 
 const POLL_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
-const SIGNIFICANT_COMMIT_THRESHOLD = 5;
+const SIGNIFICANT_COMMIT_THRESHOLD = 1;
 
 class GitMonitor {
   constructor(database) {

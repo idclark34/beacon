@@ -91,10 +91,15 @@ function createTray() {
   }
   const icon = nativeImage.createFromBuffer(canvas, { width: size, height: size });
   tray = new Tray(icon.resize({ width: 16, height: 16 }));
-  tray.setToolTip('Outpost Companion');
+  tray.setToolTip('Outpost is watching 👀');
 
   const menu = Menu.buildFromTemplate([
     { label: 'Check in now', click: () => triggerCheckIn() },
+    { label: 'Scan git now', click: async () => {
+      for (const [projectId] of gitMonitor.watchers) {
+        await gitMonitor.scanNow(projectId);
+      }
+    }},
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() },
   ]);
@@ -202,25 +207,6 @@ function setupIPC() {
   });
 
   ipcMain.handle('trigger-check-in', () => triggerCheckIn());
-
-  ipcMain.handle('send-message', async (_, text) => {
-    if (!text?.trim() || !activeProjectId) return;
-    db.saveConversation(activeProjectId, text, 'user');
-
-    const history = db.getConversations(activeProjectId, 6);
-    try {
-      const response = await aiCharacter.respond({
-        userMessage: text,
-        projectId: activeProjectId,
-        conversationHistory: history,
-        onChunk: (chunk) => mainWindow?.webContents.send('message-chunk', chunk),
-      });
-      db.saveConversation(activeProjectId, response, 'character');
-      mainWindow?.webContents.send('message-complete', response);
-    } catch (err) {
-      mainWindow?.webContents.send('message-error', err.message);
-    }
-  });
 
   ipcMain.handle('show-window', () => showWindow());
   ipcMain.handle('hide-window', () => hideWindow());
