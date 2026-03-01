@@ -18,7 +18,7 @@
     "simple-git": "^3.22.0"
   },
   "devDependencies": {
-    "electron": "^33.4.11",
-    "electron-rebuild": "^3.2.9"
+    "electron": "^35.7.5",
+    "@electron/rebuild": "^4.0.3"
   }
 }
