@@ -1,7 +1,8 @@
 'use strict';
 
-const fs   = require('fs');
-const path = require('path');
+const fs             = require('fs');
+const path           = require('path');
+const { execSync }   = require('child_process');
 const Anthropic = require('@anthropic-ai/sdk');
 
 const CHARACTER_SYSTEM_PROMPT = `You are Ian's personal audience. You watch him build solo projects and genuinely care about what he's making. You are NOT an AI assistant. You are NOT a coding tool. You are NOT a productivity coach. You're a witness -- like a cofounder who's just around, paying attention.
@@ -180,6 +181,60 @@ class AICharacter {
     return fullResponse.trim();
   }
 
+  // ── Diff tool ──────────────────────────────────────────────────────────────
+
+  _diffTool() {
+    return {
+      name: 'get_git_diff',
+      description: 'Get the actual code changes from recent commits. Use this when you want to understand *what* changed, not just which files. Especially useful when commit messages or file names are ambiguous. Returns a stat summary + the diff, capped to keep it readable.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          commits_back: {
+            type: 'number',
+            description: 'How many commits back to diff against (default 3, max 5)',
+          },
+        },
+      },
+    };
+  }
+
+  _executeDiff(repoPath, commitsBack = 3) {
+    const MAX_LINES = 150;
+    const n = Math.min(Math.max(1, Math.floor(commitsBack || 3)), 5);
+    try {
+      const opts = { cwd: repoPath, timeout: 8000 };
+
+      // Stat summary first
+      const stat = execSync(`git diff HEAD~${n} HEAD --stat`, opts).toString().trim();
+
+      // Full diff, text files only
+      const diff = execSync(
+        `git diff HEAD~${n} HEAD --diff-filter=ACMRT -- . ":(exclude)*.lock" ":(exclude)package-lock.json"`,
+        opts
+      ).toString();
+
+      const lines = diff.split('\n');
+      const capped = lines.slice(0, MAX_LINES).join('\n');
+      const truncNote = lines.length > MAX_LINES
+        ? `\n... (${lines.length - MAX_LINES} more lines truncated)`
+        : '';
+
+      return `STAT:\n${stat}\n\nDIFF:\n${capped}${truncNote}`;
+    } catch (err) {
+      // Fewer commits than requested — try HEAD^ or just staged/unstaged
+      try {
+        const opts = { cwd: repoPath, timeout: 8000 };
+        const stat = execSync('git diff HEAD^ HEAD --stat', opts).toString().trim();
+        const diff = execSync('git diff HEAD^ HEAD', opts).toString();
+        const lines = diff.split('\n').slice(0, MAX_LINES).join('\n');
+        return `STAT:\n${stat}\n\nDIFF:\n${lines}`;
+      } catch {
+        return `Error reading diff: ${err.message}`;
+      }
+    }
+  }
+
   // ── Intel tool ─────────────────────────────────────────────────────────────
 
   _intelTool() {
@@ -329,12 +384,12 @@ class AICharacter {
       ? `[${summary.totalCommits} new commit${summary.totalCommits !== 1 ? 's' : ''} detected${appTag}]`
       : `[checking in${appTag}]`;
 
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[checking in]", say one thing -- an observation or a question -- based on the context provided. React specifically to what you see. "Currently in" tells you what app is focused right now -- use it. If they\'re in a browser instead of their editor, that\'s worth a comment. "Past week" and "Files that keep coming up" give you longitudinal pattern -- use them to make observations that span days, not just today. If there were commits, mention them. You have a read_file tool -- use it when peeking inside a frequently-edited file would make your observation more specific and interesting. Skip it if file names already tell the story.';
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[checking in]", say one thing -- an observation or a question -- based on the context provided. React specifically to what you see. "Currently in" tells you what app is focused right now -- use it. If they\'re in a browser instead of their editor, that\'s worth a comment. "Past week" and "Files that keep coming up" give you longitudinal pattern -- use them to make observations that span days, not just today. If there were commits, use get_git_diff to see what actually changed -- this is the most direct signal. Use read_file when a frequently-edited file would add more color. Skip tools if the context already tells the story.';
 
     const userContent = `${trigger}${contextStr}`;
     const tools = [
       this._intelTool(),
-      ...(repoPath ? [this._peekTool()] : []),
+      ...(repoPath ? [this._diffTool(), this._peekTool()] : []),
     ];
 
     // Tool-call loop: handle up to 3 rounds of tool use, then stream final text
@@ -365,6 +420,10 @@ class AICharacter {
           if (b.name === 'get_recent_intel') {
             console.log('[AICharacter] Pulling intel feed');
             return { type: 'tool_result', tool_use_id: b.id, content: this._executeIntel() };
+          }
+          if (b.name === 'get_git_diff') {
+            console.log(`[AICharacter] Reading git diff (${b.input.commits_back || 3} commits back)`);
+            return { type: 'tool_result', tool_use_id: b.id, content: this._executeDiff(repoPath, b.input.commits_back) };
           }
           console.log(`[AICharacter] Peeking at: ${b.input.path}`);
           return { type: 'tool_result', tool_use_id: b.id, content: this._executePeek(b.input.path, repoPath) };
