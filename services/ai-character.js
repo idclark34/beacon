@@ -289,6 +289,47 @@ class AICharacter {
     return fullResponse.trim();
   }
 
+  // ── Dep alert ──────────────────────────────────────────────────────────────
+
+  /**
+   * Surfaces dependency issues (CVEs / severely outdated packages) in the character's voice.
+   * Short and actionable — Haiku at 120 tokens max.
+   */
+  async generateDepAlert({ issues, onChunk }) {
+    const client = this._getClient();
+
+    const issueLines = issues.map(i => {
+      if (i.type === 'vulnerability') {
+        const fix = i.fixVersion ? ` (patched: >=${i.fixVersion})` : '';
+        return `${i.package}${i.version ? '@' + i.version : ''} — ${i.severity}: ${i.title}${fix}`;
+      }
+      return `${i.package}@${i.current} — ${i.majorsBehind} major version${i.majorsBehind !== 1 ? 's' : ''} behind (latest: ${i.latest})`;
+    }).join('\n');
+
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [dep alert], you noticed something in the project\'s dependencies. Surface it in 1-2 sentences — specific, actionable. Name the package, what\'s wrong, and the fix version if known. Lead with the most critical. Don\'t list everything.';
+
+    const messages = [{
+      role: 'user',
+      content: `[dep alert]\n${issueLines}`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 120,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
   // ── Peek tool ──────────────────────────────────────────────────────────────
 
   _peekTool() {

@@ -13,13 +13,14 @@ const AICharacter     = require('./services/ai-character');
 const AppTracker      = require('./services/app-tracker');
 const InterestManager = require('./services/interest-manager');
 const FeedFetcher     = require('./services/feed-fetcher');
+const DepMonitor      = require('./services/dep-monitor');
 
 // ── State ──────────────────────────────────────────────────────────────────
 
 let mainWindow = null;
 let tray = null;
 let db, gitMonitor, fileWatcher, activityTracker, aiCharacter, appTracker;
-let interestManager, feedFetcher;
+let interestManager, feedFetcher, depMonitor;
 let activeProjectId = null;
 let checkInTimerId  = null;
 
@@ -153,6 +154,16 @@ async function initServices() {
   interestManager = new InterestManager(db);
   feedFetcher = new FeedFetcher();
   feedFetcher.start(db, interestManager, () => activeProjectId);
+
+  depMonitor = new DepMonitor();
+  for (const project of db.getProjects()) {
+    if (project.repo_path) depMonitor.watchProject(project.id, project.repo_path);
+  }
+  depMonitor.onIssuesFound = (projectId, issues) => {
+    const last = db.getState('last_dep_alert_time');
+    if (last && Date.now() - new Date(last) < 24 * 60 * 60 * 1000) return;
+    if (projectId === activeProjectId) triggerDepAlert(projectId, issues);
+  };
 }
 
 // ── Check-in ───────────────────────────────────────────────────────────────
@@ -288,6 +299,24 @@ async function triggerCheckIn() {
   }
 }
 
+async function triggerDepAlert(projectId, issues) {
+  if (!mainWindow) return;
+  db.setState('last_dep_alert_time', new Date().toISOString());
+  showWindow();
+  mainWindow.webContents.send('check-in-start');
+  try {
+    const message = await aiCharacter.generateDepAlert({
+      issues,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(projectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+  } catch (err) {
+    console.error('[Main] Dep alert error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
 // ── IPC ────────────────────────────────────────────────────────────────────
 
 function setupIPC() {
@@ -299,6 +328,7 @@ function setupIPC() {
     if (repo_path) {
       fileWatcher.watchDirectory(project.id, repo_path);
       gitMonitor.watchRepo(project.id, repo_path);
+      depMonitor.watchProject(project.id, repo_path);
     }
     activeProjectId = project.id;
     db.setState('active_project_id', project.id);
@@ -375,4 +405,5 @@ app.on('before-quit', () => {
   gitMonitor?.stopAll();
   fileWatcher?.stopAll();
   feedFetcher?.stop();
+  depMonitor?.stopAll();
 });
