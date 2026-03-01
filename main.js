@@ -9,21 +9,23 @@ const DB              = require('./services/database');
 const GitMonitor      = require('./services/git-monitor');
 const FileWatcher     = require('./services/file-watcher');
 const ActivityTracker = require('./services/activity-tracker');
-const AICharacter     = require('./services/ai-character');
+const { AICharacter, CODING_APPS, QUOTES } = require('./services/ai-character');
 const AppTracker      = require('./services/app-tracker');
 const InterestManager = require('./services/interest-manager');
 const FeedFetcher     = require('./services/feed-fetcher');
 const DepMonitor      = require('./services/dep-monitor');
 const SecretScanner   = require('./services/secret-scanner');
+const SpendTracker    = require('./services/spend-tracker');
 
 // ── State ──────────────────────────────────────────────────────────────────
 
 let mainWindow = null;
 let tray = null;
 let db, gitMonitor, fileWatcher, activityTracker, aiCharacter, appTracker;
-let interestManager, feedFetcher, depMonitor, secretScanner;
+let interestManager, feedFetcher, depMonitor, secretScanner, spendTracker;
 let activeProjectId = null;
 let checkInTimerId  = null;
+let lastCodingAppSeen = Date.now(); // tracks last time a coding app was focused
 
 // ── Window ─────────────────────────────────────────────────────────────────
 
@@ -176,6 +178,15 @@ async function initServices() {
     if (last && Date.now() - new Date(last) < 60 * 60 * 1000) return;
     triggerSecretAlert(projectId, findings, commitHash);
   };
+
+  spendTracker = new SpendTracker(db);
+  spendTracker.onThresholdAlert = (pct, spent, budget) =>
+    triggerSpendAlert('threshold', { pct, spent, budget });
+  spendTracker.onHighBurnRate = (dailyRate, projected, budget) =>
+    triggerSpendAlert('burn_rate', { dailyRate, projected, budget });
+  spendTracker.onLowUsage = (pct, spent, budget) =>
+    triggerSpendAlert('low_usage', { pct, spent, budget });
+  spendTracker.start();
 }
 
 // ── Check-in ───────────────────────────────────────────────────────────────
@@ -188,14 +199,13 @@ function startCheckInTimer() {
   checkInTimerId = setInterval(async () => {
     if (!activeProjectId || !mainWindow) return;
 
-    // Weekly recap — fires once per week if there's data
+    if (await maybeShowInactivityReturn()) return;    // highest priority — 3-day absence
     if (await maybeShowWeeklyRecap()) return;
-
-    // High-relevance intel drop — fires when idle + high-score items waiting
+    if (await maybeShowDistractionReturn()) return;   // 1hr distraction, 35% silent
+    if (await maybeShowProjectSwitchWarning()) return;
     if (await maybeShowIntelDrop()) return;
-
-    // First-session intro — fires once after 10 active minutes
     if (await maybeShowIntroCheckIn()) return;
+    if (await maybeShowQuote()) return;
 
     // Regular check-in
     const lastCheckIn   = db.getState('last_checkin_time');
@@ -204,7 +214,10 @@ function startCheckInTimer() {
 
     if (activeMinutes >= ACTIVE_THRESHOLD_MIN) {
       const recentlyActive = activityTracker.isRecentlyActive(activeProjectId, IDLE_GATE_MIN);
-      if (!recentlyActive) await triggerCheckIn();
+      if (!recentlyActive) {
+        if (await maybeShowProgressNarrative()) return;
+        await triggerCheckIn();
+      }
     }
   }, CHECK_POLL_MS);
 }
@@ -287,8 +300,134 @@ async function maybeShowIntelDrop() {
   return true;
 }
 
+async function maybeShowInactivityReturn() {
+  const lastActivity = db.getLastActivityTime();
+  if (!lastActivity) return false;
+
+  const now = Date.now();
+  const hoursSince = (now - new Date(lastActivity)) / (1000 * 60 * 60);
+  if (hoursSince < 72) return false;
+
+  // Skip if we already fired for this absence
+  const lastAlert = db.getState('last_inactivity_alert');
+  if (lastAlert && new Date(lastAlert) > new Date(lastActivity)) return false;
+
+  const daysSince = Math.floor(hoursSince / 24);
+  db.setState('last_inactivity_alert', new Date().toISOString());
+  await triggerInactivityReturn(daysSince);
+  return true;
+}
+
+async function maybeShowDistractionReturn() {
+  if (!appTracker) return false;
+  const currentApp = appTracker.getCurrentApp();
+  if (!currentApp) return false;
+
+  if (CODING_APPS.has(currentApp)) {
+    const now = Date.now();
+    const gapMinutes = (now - lastCodingAppSeen) / 60000;
+    lastCodingAppSeen = now; // always update when confirmed in coding app
+
+    if (gapMinutes >= 60) {
+      const lastAlert = db.getState('last_distraction_alert');
+      if (lastAlert && (now - new Date(lastAlert)) < 2 * 60 * 60 * 1000) return false;
+
+      // 35% chance: intentional silence — the silence IS the response
+      if (Math.random() < 0.35) {
+        db.setState('last_distraction_alert', new Date().toISOString());
+        return true;
+      }
+
+      await triggerDistractionReturn(Math.round(gapMinutes));
+      db.setState('last_distraction_alert', new Date().toISOString());
+      return true;
+    }
+  }
+  // Not in coding app — don't update lastCodingAppSeen
+  return false;
+}
+
+async function maybeShowProjectSwitchWarning() {
+  const now = Date.now();
+  const lastAlert = db.getState('last_project_switch_alert');
+  if (lastAlert && (now - new Date(lastAlert)) < 4 * 60 * 60 * 1000) return false;
+
+  // Session check: 3+ distinct projects in last 4 hours
+  const recentIds = db.getActiveProjectIds(4);
+  if (recentIds.length >= 3) {
+    const names = recentIds.map(id => db.getProject(id)?.name || `Project ${id}`);
+    db.setState('last_project_switch_alert', new Date().toISOString());
+    await triggerProjectSwitchWarning('session', names, null);
+    return true;
+  }
+
+  // Pattern check: 3+ projects over 7 days with 0 commits
+  const pattern = db.getMultiProjectPattern(7);
+  const noCommit = pattern.filter(p => p.commit_events === 0);
+  if (noCommit.length >= 3 && noCommit.some(p => p.active_days >= 3)) {
+    const daySpan = Math.max(...noCommit.map(p => p.active_days));
+    const names = noCommit.map(p => db.getProject(p.project_id)?.name || `Project ${p.project_id}`);
+    db.setState('last_project_switch_alert', new Date().toISOString());
+    await triggerProjectSwitchWarning('pattern', names, daySpan);
+    return true;
+  }
+
+  return false;
+}
+
+async function maybeShowQuote() {
+  const today = new Date().toISOString().split('T')[0];
+  if (db.getState('last_quote_date') === today) return false;
+
+  // Only fire when idle (no file activity in last 10 min)
+  if (activityTracker.isRecentlyActive(activeProjectId, 10)) return false;
+
+  // Pick a quote, avoiding the most recently used index
+  const lastIdx = parseInt(db.getState('last_quote_index') || '-1', 10);
+  let idx = Math.floor(Math.random() * QUOTES.length);
+  if (idx === lastIdx && QUOTES.length > 1) idx = (idx + 1) % QUOTES.length;
+
+  db.setState('last_quote_date', today);
+  db.setState('last_quote_index', String(idx));
+  await triggerQuote(QUOTES[idx]);
+  return true;
+}
+
+async function maybeShowProgressNarrative() {
+  const lastProgress = db.getState('last_progress_date');
+  if (lastProgress) {
+    const daysSince = (Date.now() - new Date(lastProgress)) / (1000 * 60 * 60 * 24);
+    if (daysSince < 3) return false;
+  }
+
+  // Only fire if session has been long (90+ active minutes since last check-in)
+  const lastCheckIn = db.getState('last_checkin_time');
+  const since = lastCheckIn ? new Date(lastCheckIn) : new Date(0);
+  if (db.getActiveMinutesSince(activeProjectId, since) < 90) return false;
+
+  db.setState('last_progress_date', new Date().toISOString());
+  await triggerProgressNarrative();
+  return true;
+}
+
 function scheduleCheckIn(delayMs = 0) {
   setTimeout(triggerCheckIn, delayMs);
+}
+
+/**
+ * Ask the renderer to capture a webcam frame and return it as base64 JPEG.
+ * Resolves null if the window isn't ready, camera is denied, or times out.
+ */
+function captureFrame() {
+  if (!mainWindow) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve(null), 5000);
+    ipcMain.once('frame-captured', (_, frameData) => {
+      clearTimeout(timeout);
+      resolve(frameData || null);
+    });
+    mainWindow.webContents.send('capture-frame');
+  });
 }
 
 async function triggerCheckIn() {
@@ -298,9 +437,12 @@ async function triggerCheckIn() {
   showWindow();
   mainWindow.webContents.send('check-in-start');
 
+  const imageBase64 = await captureFrame().catch(() => null);
+
   try {
     const message = await aiCharacter.generateCheckIn({
       projectId: activeProjectId,
+      imageBase64,
       onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
     });
     db.saveConversation(activeProjectId, message, 'character');
@@ -344,6 +486,120 @@ async function triggerDepAlert(projectId, issues) {
     mainWindow?.webContents.send('check-in-complete', message);
   } catch (err) {
     console.error('[Main] Dep alert error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
+async function triggerSpendAlert(type, data) {
+  if (!mainWindow) return;
+  showWindow();
+  mainWindow.webContents.send('check-in-start');
+  try {
+    const message = await aiCharacter.generateSpendAlert({
+      type,
+      percentUsed:       data.pct       || 0,
+      totalSpent:        data.spent      || 0,
+      budget:            data.budget     || 0,
+      dailyRate:         data.dailyRate  || 0,
+      projectedMonthly:  data.projected  || 0,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    if (activeProjectId) db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+  } catch (err) {
+    console.error('[Main] Spend alert error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
+async function triggerDistractionReturn(distractionMinutes) {
+  if (!mainWindow || !activeProjectId) return;
+  showWindow();
+  mainWindow.webContents.send('check-in-start');
+  try {
+    const message = await aiCharacter.generateDistractionReturn({
+      distractionMinutes,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+  } catch (err) {
+    console.error('[Main] Distraction return error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
+async function triggerInactivityReturn(daysSince) {
+  if (!mainWindow || !activeProjectId) return;
+  db.setState('last_checkin_time', new Date().toISOString());
+  showWindow();
+  mainWindow.webContents.send('check-in-start');
+  try {
+    const message = await aiCharacter.generateInactivityReturn({
+      daysSince,
+      projectId: activeProjectId,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+    // Optionally follow up with a progress narrative after user has had time to read
+    setTimeout(() => maybeShowProgressNarrative(), 60000);
+  } catch (err) {
+    console.error('[Main] Inactivity return error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
+async function triggerProjectSwitchWarning(type, names, daySpan) {
+  if (!mainWindow || !activeProjectId) return;
+  showWindow();
+  mainWindow.webContents.send('check-in-start');
+  try {
+    const message = await aiCharacter.generateProjectSwitchWarning({
+      type,
+      projectNames: names,
+      daySpan,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+  } catch (err) {
+    console.error('[Main] Project switch warning error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
+async function triggerQuote(quote) {
+  if (!mainWindow || !activeProjectId) return;
+  showWindow();
+  mainWindow.webContents.send('check-in-start');
+  try {
+    const message = await aiCharacter.generateQuote({
+      quote,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+  } catch (err) {
+    console.error('[Main] Quote error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
+async function triggerProgressNarrative() {
+  if (!mainWindow || !activeProjectId) return;
+  db.setState('last_progress_date', new Date().toISOString());
+  showWindow();
+  mainWindow.webContents.send('check-in-start');
+  try {
+    const message = await aiCharacter.generateProgressNarrative({
+      projectId: activeProjectId,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+  } catch (err) {
+    console.error('[Main] Progress narrative error:', err.message);
     mainWindow?.webContents.send('check-in-complete', '');
   }
 }
@@ -439,4 +695,5 @@ app.on('before-quit', () => {
   feedFetcher?.stop();
   depMonitor?.stopAll();
   secretScanner?.stopAll();
+  spendTracker?.stop();
 });

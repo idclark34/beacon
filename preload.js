@@ -33,6 +33,10 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('reply-complete', (_, msg)  => cb({ type: 'complete', message: msg }));
   },
 
+  // ── Camera frame exchange ─────────────────────────────────────────────────
+  onCaptureFrame: (cb) => ipcRenderer.on('capture-frame', () => cb()),
+  sendFrame:      (b64) => ipcRenderer.send('frame-captured', b64),
+
   // ── Interests & feed sources ──────────────────────────────────────────────
   getInterests: ()         => ipcRenderer.invoke('get-interests'),
   setInterests: (topics)   => ipcRenderer.invoke('set-interests', topics),

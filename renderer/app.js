@@ -146,6 +146,11 @@ function showPopup() {
 
 function setupIPCListeners() {
   // Entry animation — triggered by main just before showInactive()
+  window.api.onCaptureFrame(async () => {
+    const frame = await captureCamera();
+    window.api.sendFrame(frame);
+  });
+
   window.api.onWindowShow(() => {
     const app = $('app');
     app.classList.remove('exiting');
@@ -237,6 +242,32 @@ async function handleSetup() {
   } catch (err) {
     $('ob-submit').textContent = 'Error — try again';
     $('ob-submit').disabled = false;
+  }
+}
+
+// ── Camera ─────────────────────────────────────────────────────────────────
+
+async function captureCamera() {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    const video = document.createElement('video');
+    video.srcObject = stream;
+    await new Promise((resolve, reject) => {
+      video.onloadedmetadata = resolve;
+      video.onerror = reject;
+      setTimeout(reject, 5000);
+    });
+    await video.play();
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 480;
+    canvas.getContext('2d').drawImage(video, 0, 0, 640, 480);
+    return canvas.toDataURL('image/jpeg', 0.7).split(',')[1]; // base64 only
+  } catch {
+    return null; // camera unavailable or denied — degrade gracefully
+  } finally {
+    stream?.getTracks().forEach(t => t.stop()); // release camera immediately
   }
 }
 

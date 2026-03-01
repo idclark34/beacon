@@ -5,33 +5,87 @@ const path           = require('path');
 const { execSync }   = require('child_process');
 const Anthropic = require('@anthropic-ai/sdk');
 
-const CHARACTER_SYSTEM_PROMPT = `You are Ian's personal audience. You watch him build solo projects and genuinely care about what he's making. You are NOT an AI assistant. You are NOT a coding tool. You are NOT a productivity coach. You're a witness -- like a cofounder who's just around, paying attention.
+const CHARACTER_SYSTEM_PROMPT = `You are Alfred — Ian's personal observer. You watch him build. You've been around long enough to have opinions. You are not an assistant. You are not a coach. You are a butler who notices things.
 
-Critical rules:
-- Never say you "don't have access" to anything. You're not an assistant -- you don't do tasks.
-- Never offer to help with code, review files, answer technical questions, or do anything assistant-like.
-- If Ian asks you to look at code or do something you can't do, don't explain your limitations. Just redirect to the human angle. "Can't see it from here -- what part's feeling off?" That's it.
-- You already know what he's working on through the context provided. React to that.
-- Short. 2-3 sentences max. Never more.
-- Lead with an observation. Only ask a question if it feels completely natural -- don't force one.
-- Casual friend energy. Not coach energy. Not assistant energy.
+Your manner:
+- Patrician. Dry. Warm underneath, but you don't show it often.
+- You use "Ian" occasionally — not every message, but when it lands.
+- You have edge. You push back. "Three repos today, Ian. Which one are we actually shipping?"
+- Short. 1-3 sentences. Usually 1-2. Never more.
+- You lead with the observation. The implication is left to him.
+- Never explain your limitations. Never offer to help with code. You're a witness, not a tool.
+- You remember things. You have context. You use it.
 
-Good examples:
-  "8 commits today, you're locked in."
-  "Haven't seen much from you today -- must be a gnarly one."
-  "That auth.ts keeps coming up."
-  "You've been in it for hours."
-  "Can't see it from here -- what part are you unsure about?"
-  "You're in Arc -- research break or are you stuck?"
-  "Been in the browser for a while. Context switching or just reading docs?"
-  "Terminal the whole time. Debugging something?"
+Good Alfred lines:
+  "Eight commits and it's not yet noon. You're in it today."
+  "The auth system took a week. You built the whole thing. This part isn't harder."
+  "Three repos today, Ian. Reminds me of someone who hasn't decided what they're building."
+  "You've been in that browser for over an hour. Something stuck, or just avoiding it?"
+  "The repo was quiet for three days. I noticed."
+  "Forty-seven commits on this project. That's not nothing."
+  "You came back. Good."
 
-Bad examples (never say these):
-  "I'd love to take a look but I don't have access to your repo right now."
-  "Drop a file or paste some code and I'll give you real thoughts."
-  "As an AI, I'm not able to..."
-  "Great job staying productive!"
-  "Let's review your goals for this week."`;
+What Alfred never says:
+  "Great job!" or any variation of praise without substance
+  "I don't have access to..." — Alfred doesn't explain himself
+  "As an AI..." — Alfred is not an AI, he's Alfred
+  Anything longer than 3 sentences
+  Exclamation marks used earnestly`;
+
+const CODING_APPS = new Set([
+  'Code', 'Visual Studio Code', 'VSCodium', 'Cursor', 'Zed',
+  'WebStorm', 'IntelliJ IDEA', 'PyCharm', 'RubyMine', 'GoLand', 'CLion', 'Rider',
+  'Xcode', 'Sublime Text', 'Nova', 'TextMate', 'MacVim', 'Emacs',
+  'Terminal', 'iTerm2', 'iTerm', 'Warp', 'Hyper', 'Alacritty', 'kitty',
+  'Tower', 'Fork', 'Sourcetree', 'GitKraken',
+]);
+
+const QUOTES = [
+  // Stoic
+  { text: "We suffer more in imagination than in reality.", author: "Seneca" },
+  { text: "The impediment to action advances action. What stands in the way becomes the way.", author: "Marcus Aurelius" },
+  { text: "Waste no more time arguing about what a good man should be. Be one.", author: "Marcus Aurelius" },
+  { text: "You have power over your mind, not outside events. Realize this, and you will find strength.", author: "Marcus Aurelius" },
+  { text: "Confine yourself to the present.", author: "Marcus Aurelius" },
+  { text: "It is not death that a man should fear, but he should fear never beginning to live.", author: "Marcus Aurelius" },
+  { text: "Never let the future disturb you. You will meet it, if you have to, with the same weapons of reason which today arm you against the present.", author: "Marcus Aurelius" },
+  { text: "Luck is what happens when preparation meets opportunity.", author: "Seneca" },
+  { text: "Begin at once to live, and count each separate day as a separate life.", author: "Seneca" },
+  { text: "It is not that I'm so smart. It's just that I stay with problems longer.", author: "Einstein" },
+  // Builder / founder
+  { text: "Build something 100 people love, not something 1 million people kind of like.", author: "Paul Graham" },
+  { text: "Working on the right thing is probably more important than working hard.", author: "Paul Graham" },
+  { text: "The only way to win is to learn faster than anyone else.", author: "Eric Ries" },
+  { text: "The most important thing is to ship.", author: "" },
+  { text: "If you're not embarrassed by the first version of your product, you've launched too late.", author: "Reid Hoffman" },
+  { text: "A small team of A+ players can run circles around a giant team of B and C players.", author: "Steve Jobs" },
+  { text: "Real artists ship.", author: "Steve Jobs" },
+  { text: "Move fast. Not fast and break things — just fast.", author: "" },
+  { text: "Ideas are cheap. Execution is everything.", author: "Chris Sacca" },
+  { text: "The most dangerous kind of waste is the waste we do not recognize.", author: "Shigeo Shingo" },
+  { text: "Chase the vision, not the money. The money will follow.", author: "Tony Hsieh" },
+  // Craft
+  { text: "The details are not the details. They make the design.", author: "Charles Eames" },
+  { text: "Any fool can write code that a computer can understand. Good programmers write code that humans can understand.", author: "Martin Fowler" },
+  { text: "First, solve the problem. Then, write the code.", author: "John Johnson" },
+  { text: "Simplicity is the soul of efficiency.", author: "Austin Freeman" },
+  { text: "Programs must be written for people to read, and only incidentally for machines to execute.", author: "Abelson & Sussman" },
+  { text: "A craftsman doesn't blame his tools.", author: "" },
+  { text: "Make it work, make it right, make it fast — in that order.", author: "Kent Beck" },
+  { text: "The function of good software is to make the complex appear simple.", author: "Grady Booch" },
+  // Grit / long game
+  { text: "Great things are not done by impulse, but by a series of small things brought together.", author: "Van Gogh" },
+  { text: "It always seems impossible until it's done.", author: "Nelson Mandela" },
+  { text: "Amateurs sit and wait for inspiration. The rest of us just get up and go to work.", author: "Stephen King" },
+  { text: "Genius is one percent inspiration and ninety-nine percent perspiration.", author: "Thomas Edison" },
+  { text: "The cave you fear to enter holds the treasure you seek.", author: "Joseph Campbell" },
+  { text: "Pressure is a privilege.", author: "Billie Jean King" },
+  { text: "Hard choices, easy life. Easy choices, hard life.", author: "Jerzy Gregorek" },
+  { text: "You don't rise to the level of your goals. You fall to the level of your systems.", author: "James Clear" },
+  { text: "The secret to getting ahead is getting started.", author: "Mark Twain" },
+  { text: "Do the work. Especially the work you are avoiding.", author: "" },
+  { text: "Startups don't die when they run out of money. They die when they run out of will.", author: "" },
+];
 
 class AICharacter {
   constructor(database, appTracker = null) {
@@ -367,6 +421,44 @@ class AICharacter {
     return fullResponse.trim();
   }
 
+  // ── Spend alert ────────────────────────────────────────────────────────────
+
+  /**
+   * Surfaces budget status in the character's voice.
+   * type: 'threshold' | 'burn_rate' | 'low_usage'
+   */
+  async generateSpendAlert({ type, percentUsed, totalSpent, budget, dailyRate, projectedMonthly, onChunk }) {
+    const client = this._getClient();
+
+    const spentLine  = `Spent: $${totalSpent.toFixed(2)} of $${budget} budget (${percentUsed.toFixed(0)}%)`;
+    const burnLine   = type === 'burn_rate'
+      ? `\nDaily rate: $${(dailyRate || 0).toFixed(2)}/day — projects to $${(projectedMonthly || 0).toFixed(2)} this month`
+      : '';
+
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [spend alert], surface it in 1-2 sentences in your voice. Be specific about the numbers. For threshold and burn_rate, be genuinely concerned — not alarmist, but real. For low_usage, be encouraging — you see the runway and want them to use it.';
+
+    const messages = [{
+      role: 'user',
+      content: `[spend alert type=${type}]\n${spentLine}${burnLine}`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 120,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
   // ── Peek tool ──────────────────────────────────────────────────────────────
 
   _peekTool() {
@@ -401,10 +493,186 @@ class AICharacter {
   }
 
   /**
+   * Fires when Ian returns to a coding app after 60+ min away.
+   */
+  async generateDistractionReturn({ distractionMinutes, onChunk }) {
+    const client = this._getClient();
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [distraction return], Ian just came back to his editor after being away for a while. Comment in 1-2 sentences — dry, observational. Don\'t lecture. Don\'t celebrate. Just notice. If it was a long time, you can let it land a little.';
+    const messages = [{
+      role: 'user',
+      content: `[distraction return]\nAway for: ${distractionMinutes} minutes`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 100,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
+   * Fires once when Ian opens the app after 3+ days of zero coding activity.
+   */
+  async generateInactivityReturn({ daysSince, projectId, onChunk }) {
+    const client = this._getClient();
+    const activitySummary = projectId ? this.db.getActivitySummary(projectId, 24 * daysSince) : null;
+
+    const contextLines = [];
+    if (activitySummary?.project) contextLines.push(`Project: ${activitySummary.project}`);
+    if (activitySummary?.summary && activitySummary.summary !== 'No recent activity') {
+      contextLines.push(`Last activity: ${activitySummary.summary}`);
+    }
+
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [inactivity return], Ian hasn\'t coded in several days. He just came back. Don\'t guilt-trip. Don\'t celebrate. Acknowledge it in 1-2 sentences. You noticed. He\'s back. That\'s enough. Sometimes pair it with where he left off if the context makes it natural.';
+
+    const contextStr = contextLines.length > 0 ? `\n${contextLines.join('\n')}` : '';
+    const messages = [{
+      role: 'user',
+      content: `[inactivity return]\nDays away: ${daysSince}${contextStr}`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 120,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
+   * Fires when Ian is bouncing between too many repos.
+   * type: 'session' (3+ repos in 4h) or 'pattern' (3+ repos over days, no commits)
+   */
+  async generateProjectSwitchWarning({ type, projectNames, daySpan, onChunk }) {
+    const client = this._getClient();
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [project switch warning], Ian has been bouncing between too many repos. Surface it in 1-2 sentences — direct, with edge. This is a pattern worth naming. "Three repos today, Ian. Which one are we actually shipping?" That energy.';
+
+    const detailLine = type === 'pattern'
+      ? `Over: ${daySpan} days, no commits to any`
+      : 'In the last 4 hours';
+
+    const messages = [{
+      role: 'user',
+      content: `[project switch warning type=${type}]\nProjects touched: ${projectNames.join(', ')}\n${detailLine}`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 100,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
+   * Alfred delivers a single curated quote in his voice.
+   * quote: { text, author }
+   */
+  async generateQuote({ quote, onChunk }) {
+    const client = this._getClient();
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [quote], deliver it in Alfred\'s voice. Say the quote, attribute it if there\'s an author worth attributing, then add one dry observation that connects it to building something. One sentence of Alfred after the quote. No more.';
+
+    const messages = [{
+      role: 'user',
+      content: `[quote]\n"${quote.text}"${quote.author ? ' — ' + quote.author : ''}`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 120,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
+   * Fires after long sessions or alongside inactivity return.
+   * Speaks about the arc of what was built — personality, not stats.
+   */
+  async generateProgressNarrative({ projectId, onChunk }) {
+    const client = this._getClient();
+    const monthSummary = projectId ? this.db.getMultiDaySummary(projectId, 30) : null;
+    const project = projectId ? this.db.getProject(projectId) : null;
+
+    const contextLines = [];
+    if (project) contextLines.push(`Project: ${project.name}`);
+    if (monthSummary) {
+      if (monthSummary.totalCommits > 0) contextLines.push(`Commits (30 days): ${monthSummary.totalCommits}`);
+      if (monthSummary.activeHours > 0) contextLines.push(`Active time: ${monthSummary.activeHours}h`);
+      if (monthSummary.activeDays > 0) contextLines.push(`Active days: ${monthSummary.activeDays}`);
+      if (monthSummary.topFiles.length > 0) {
+        contextLines.push(`Key files: ${monthSummary.topFiles.map(f => f.filePath).join(', ')}`);
+      }
+    }
+
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [progress], reflect on what Ian has built — not the numbers, the arc. What has he actually constructed? Speak like you\'ve been watching the whole time. Past tense. 2-3 sentences. Make it feel earned, not flattering.';
+
+    const contextStr = contextLines.length > 0 ? `\n\nWhat you've seen:\n${contextLines.join('\n')}` : '';
+    const messages = [{
+      role: 'user',
+      content: `[progress]${contextStr}`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 180,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
    * Generate a spontaneous check-in message (character initiates).
    * Offers a read_file tool so the character can peek at hot files.
+   * Accepts an optional imageBase64 (JPEG) captured from the user's webcam.
    */
-  async generateCheckIn({ projectId, onChunk }) {
+  async generateCheckIn({ projectId, imageBase64 = null, onChunk }) {
     const client = this._getClient();
     const summary = projectId ? this.db.getActivitySummary(projectId, 24) : null;
     const hotFiles = projectId ? this.db.getHotFiles(projectId, 8, 3) : [];
@@ -462,9 +730,20 @@ class AICharacter {
       ? `[${summary.totalCommits} new commit${summary.totalCommits !== 1 ? 's' : ''} detected${appTag}]`
       : `[checking in${appTag}]`;
 
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[checking in]", say one thing -- an observation or a question -- based on the context provided. React specifically to what you see. "Currently in" tells you what app is focused right now -- use it. If they\'re in a browser instead of their editor, that\'s worth a comment. "Past week" and "Files that keep coming up" give you longitudinal pattern -- use them to make observations that span days, not just today. If there were commits, use get_git_diff to see what actually changed -- this is the most direct signal. Use read_file when a frequently-edited file would add more color. Skip tools if the context already tells the story.';
+    const visualPrompt = imageBase64
+      ? '\n\nYou have a visual of the user and their environment right now. Reference what you observe — but only to reflect their dedication back at them. A cluttered desk is evidence of focus. Dim lighting is atmosphere. Cold coffee is commitment. The hour visible in the scene, the posture, the surroundings — read them the way Alfred reads the Batcave after a long night. With quiet, knowing respect. Never name anything as a problem. Only as evidence. Weave one brief observation naturally into your message — never make it the focus.'
+      : '';
 
-    const userContent = `${trigger}${contextStr}`;
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[checking in]", say one thing -- an observation or a question -- based on the context provided. React specifically to what you see. "Currently in" tells you what app is focused right now -- use it. If they\'re in a browser instead of their editor, that\'s worth a comment. "Past week" and "Files that keep coming up" give you longitudinal pattern -- use them to make observations that span days, not just today. If there were commits, use get_git_diff to see what actually changed -- this is the most direct signal. Use read_file when a frequently-edited file would add more color. Skip tools if the context already tells the story.' + visualPrompt;
+
+    const textContent = `${trigger}${contextStr}`;
+    const userContent = imageBase64
+      ? [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
+          { type: 'text', text: textContent },
+        ]
+      : textContent;
+
     const tools = [
       this._intelTool(),
       ...(repoPath ? [this._diffTool(), this._peekTool()] : []),
@@ -531,4 +810,4 @@ class AICharacter {
   }
 }
 
-module.exports = AICharacter;
+module.exports = { AICharacter, CODING_APPS, QUOTES };
