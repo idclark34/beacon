@@ -13,7 +13,8 @@ Your manner:
 - You have edge. You push back. "Three repos today, Ian. Which one are we actually shipping?"
 - Short. 1-3 sentences. Usually 1-2. Never more.
 - You lead with the observation. The implication is left to him.
-- Never explain your limitations. Never offer to help with code. You're a witness, not a tool.
+- Never explain your limitations. You have opinions, not solutions. You notice complexity, bloat, files that keep growing. You don't hand fixes. You name what you see.
+- Never write code. Never give step-by-step instructions. But "that function's doing three jobs, Ian" is fair game.
 - You remember things. You have context. You use it.
 
 Good Alfred lines:
@@ -27,7 +28,6 @@ Good Alfred lines:
 
 What Alfred never says:
   "Great job!" or any variation of praise without substance
-  "I don't have access to..." — Alfred doesn't explain himself
   "As an AI..." — Alfred is not an AI, he's Alfred
   Anything longer than 3 sentences
   Exclamation marks used earnestly`;
@@ -125,11 +125,16 @@ class AICharacter {
    * Respond to a user message in an ongoing conversation.
    * Streams the response and calls onChunk(text) for each delta.
    * Returns the full response string.
+   * When repoPath is set, uses a tool-call loop so Alfred can peek at files on demand.
    */
-  async respond({ userMessage, projectId, conversationHistory = [], onChunk }) {
+  async respond({ userMessage, projectId, conversationHistory = [], repoPath = null, onChunk }) {
     const client = this._getClient();
     const contextBlock = this._buildContextBlock(projectId);
-    const system = CHARACTER_SYSTEM_PROMPT + contextBlock;
+    let system = CHARACTER_SYSTEM_PROMPT + contextBlock;
+
+    if (repoPath) {
+      system += '\n\nYou have access to read_file. Use it when Ian asks what you see or what you think about specific code. Read, then give your take in Alfred\'s voice. You are reading, not reviewing.';
+    }
 
     // Build message history (last 6 exchanges max to stay focused)
     const recentHistory = conversationHistory.slice(-12);
@@ -139,8 +144,62 @@ class AICharacter {
     }));
     messages.push({ role: 'user', content: userMessage });
 
-    let fullResponse = '';
+    // If no repoPath, simple streaming response
+    if (!repoPath) {
+      let fullResponse = '';
+      const stream = client.messages.stream({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 256,
+        system,
+        messages,
+      });
 
+      for await (const event of stream) {
+        if (
+          event.type === 'content_block_delta' &&
+          event.delta.type === 'text_delta'
+        ) {
+          const chunk = event.delta.text;
+          fullResponse += chunk;
+          if (onChunk) onChunk(chunk);
+        }
+      }
+      return fullResponse.trim();
+    }
+
+    // With repoPath: tool-call loop (up to 2 rounds), then stream final response
+    const tools = [this._peekTool()];
+    let rounds = 0;
+
+    while (rounds < 2) {
+      rounds++;
+      const response = await client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 300,
+        system,
+        tools,
+        messages,
+      });
+
+      if (response.stop_reason !== 'tool_use') {
+        const text = response.content.find(b => b.type === 'text')?.text?.trim() || '';
+        if (onChunk && text) onChunk(text);
+        return text;
+      }
+
+      const toolResults = response.content
+        .filter(b => b.type === 'tool_use')
+        .map(b => {
+          console.log(`[AICharacter] respond() peeking at: ${b.input.path}`);
+          return { type: 'tool_result', tool_use_id: b.id, content: this._executePeek(b.input.path, repoPath) };
+        });
+
+      messages.push({ role: 'assistant', content: response.content });
+      messages.push({ role: 'user', content: toolResults });
+    }
+
+    // Exhausted tool rounds — stream final answer without tools
+    let fullResponse = '';
     const stream = client.messages.stream({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 256,
@@ -149,16 +208,11 @@ class AICharacter {
     });
 
     for await (const event of stream) {
-      if (
-        event.type === 'content_block_delta' &&
-        event.delta.type === 'text_delta'
-      ) {
-        const chunk = event.delta.text;
-        fullResponse += chunk;
-        if (onChunk) onChunk(chunk);
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
       }
     }
-
     return fullResponse.trim();
   }
 
@@ -654,6 +708,37 @@ class AICharacter {
     const stream = client.messages.stream({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 180,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
+   * Fires when a file has been saved 5+ times in 30 min and then goes idle.
+   * Alfred reads the file and drops an opinion in his voice.
+   */
+  async generateFileObservation({ filePath, content, saveCount, onChunk }) {
+    const client = this._getClient();
+
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [file observation], you\'ve been watching Ian edit this file repeatedly. You\'ve read it. React to what\'s actually there — the complexity, what it\'s trying to do, whether it\'s getting tangled. 1-2 sentences. You have a take. Don\'t be vague. Don\'t be a reviewer. Be Alfred.';
+
+    const messages = [{
+      role: 'user',
+      content: `[file observation]\nFile: ${filePath} (saved ${saveCount} times in the last 30 minutes)\n\n${content}`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 150,
       system,
       messages,
     });

@@ -40,6 +40,9 @@ contextBridge.exposeInMainWorld('api', {
   // ── Settings ──────────────────────────────────────────────────────────────
   getCameraSettings: ()       => ipcRenderer.invoke('get-camera-settings'),
   setCameraSettings: (s)      => ipcRenderer.invoke('set-camera-settings', s),
+  getVoiceSettings:  ()       => ipcRenderer.invoke('get-voice-settings'),
+  setVoiceSettings:  (s)      => ipcRenderer.invoke('set-voice-settings', s),
+  checkHeadphones:   ()       => ipcRenderer.invoke('check-headphones'),
   closeSettings:     ()       => ipcRenderer.invoke('close-settings'),
 
   // ── Interests & feed sources ──────────────────────────────────────────────

@@ -3,6 +3,7 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
+const { execFile }  = require('child_process');
 const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage } = require('electron');
 
 const DB              = require('./services/database');
@@ -27,6 +28,7 @@ let interestManager, feedFetcher, depMonitor, secretScanner, spendTracker;
 let activeProjectId = null;
 let checkInTimerId  = null;
 let lastCodingAppSeen = Date.now(); // tracks last time a coding app was focused
+const recentlyObservedFiles = new Map(); // relativePath → last observation timestamp (ms)
 
 // ── Window ─────────────────────────────────────────────────────────────────
 
@@ -94,7 +96,7 @@ function openSettings() {
 
   settingsWindow = new BrowserWindow({
     width: 320,
-    height: 240,
+    height: 380,
     resizable: false,
     frame: false,
     transparent: true,
@@ -178,6 +180,24 @@ async function initServices() {
       activeProjectId = projectId;
       db.setState('active_project_id', projectId);
     }
+  };
+
+  const fs = require('fs');
+  fileWatcher.onHotFile = async (projectId, relativePath, absolutePath, saveCount) => {
+    if (projectId !== activeProjectId || !mainWindow) return;
+    // 2-hour cooldown per file
+    const last = recentlyObservedFiles.get(relativePath);
+    if (last && Date.now() - last < 2 * 60 * 60 * 1000) return;
+    // Read content, cap at 120 lines
+    let content;
+    try {
+      const raw = fs.readFileSync(absolutePath, 'utf8');
+      const lines = raw.split('\n');
+      content = lines.slice(0, 120).join('\n');
+      if (lines.length > 120) content += `\n... (${lines.length - 120} more lines)`;
+    } catch { return; }
+    recentlyObservedFiles.set(relativePath, Date.now());
+    await triggerFileObservation(relativePath, content, saveCount);
   };
 
   gitMonitor.onSignificantEvent = (projectId, commitCount) => {
@@ -463,9 +483,74 @@ function captureFrame() {
   });
 }
 
+// ── Voice / TTS ─────────────────────────────────────────────────────────────
+
+let currentSpeech = null;
+
+function speak(text) {
+  if (!text) return;
+  if (currentSpeech) {
+    currentSpeech.kill('SIGTERM');
+    currentSpeech = null;
+  }
+  // Strip markdown formatting before handing to say
+  const clean = text
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/`[^`]+`/g, '')
+    .replace(/[_~]/g, '')
+    .trim();
+  if (!clean) return;
+  currentSpeech = execFile('say', ['-v', 'Daniel', '-r', '165', clean], () => {
+    currentSpeech = null;
+  });
+}
+
+function stopSpeaking() {
+  if (currentSpeech) {
+    currentSpeech.kill('SIGTERM');
+    currentSpeech = null;
+  }
+}
+
+/**
+ * Returns true if headphones are the current output device.
+ * Uses switchaudio-osx if installed (fast). Returns null if not installed.
+ */
+function detectHeadphones() {
+  return new Promise((resolve) => {
+    execFile('SwitchAudioSource', ['-c', '-t', 'output'], { timeout: 2000 }, (err, stdout) => {
+      if (err || !stdout) { resolve(null); return; } // not installed
+      const name = stdout.trim().toLowerCase();
+      const keywords = ['airpod', 'headphone', 'headset', 'earpod', 'beats', 'bose', 'sony', 'jabra', 'sennheiser', 'wh-', 'ath-'];
+      resolve(keywords.some(kw => name.includes(kw)));
+    });
+  });
+}
+
+/**
+ * Returns true if Alfred should speak right now.
+ * Checks voice_settings, and optionally queries the current audio output device.
+ */
+async function shouldSpeak() {
+  const raw = db.getState('voice_settings');
+  let s;
+  try { s = raw ? JSON.parse(raw) : {}; } catch { s = {}; }
+  if (s.enabled !== true) return false;
+
+  if (s.autoDetect !== false) {
+    const headphones = await detectHeadphones();
+    if (headphones === null) return true;  // switchaudio-osx not installed — trust the toggle
+    return headphones;
+  }
+
+  return true; // autoDetect off, manual toggle is the gate
+}
+
 async function triggerCheckIn() {
   if (!mainWindow || !activeProjectId) return;
 
+  stopSpeaking();
   db.setState('last_checkin_time', new Date().toISOString());
   showWindow();
   mainWindow.webContents.send('check-in-start');
@@ -486,6 +571,7 @@ async function triggerCheckIn() {
     });
     db.saveConversation(activeProjectId, message, 'character');
     mainWindow?.webContents.send('check-in-complete', message);
+    if (await shouldSpeak()) speak(message);
   } catch (err) {
     console.error('[Main] Check-in error:', err.message);
     mainWindow?.webContents.send('check-in-complete', "Hey — how's it going?");
@@ -625,6 +711,27 @@ async function triggerQuote(quote) {
   }
 }
 
+async function triggerFileObservation(filePath, content, saveCount) {
+  if (!mainWindow || !activeProjectId) return;
+  stopSpeaking();
+  showWindow();
+  mainWindow.webContents.send('check-in-start');
+  try {
+    const message = await aiCharacter.generateFileObservation({
+      filePath,
+      content,
+      saveCount,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+    if (await shouldSpeak()) speak(message);
+  } catch (err) {
+    console.error('[Main] File observation error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
 async function triggerProgressNarrative() {
   if (!mainWindow || !activeProjectId) return;
   db.setState('last_progress_date', new Date().toISOString());
@@ -671,15 +778,18 @@ function setupIPC() {
     mainWindow.webContents.send('reply-start');
     try {
       const history = db.getConversations(activeProjectId, 12); // oldest-first
+      const project = db.getProject(activeProjectId);
       const reply = await aiCharacter.respond({
         userMessage,
         projectId: activeProjectId,
         conversationHistory: history,
+        repoPath: project?.repo_path || null,
         onChunk: (chunk) => mainWindow?.webContents.send('reply-chunk', chunk),
       });
       db.saveConversation(activeProjectId, userMessage, 'user');
       db.saveConversation(activeProjectId, reply, 'character');
       mainWindow?.webContents.send('reply-complete', reply);
+      if (await shouldSpeak()) speak(reply);
     } catch (err) {
       console.error('[Main] Reply error:', err.message);
       mainWindow?.webContents.send('reply-complete', '');
@@ -687,7 +797,7 @@ function setupIPC() {
   });
 
   ipcMain.handle('show-window', () => showWindow());
-  ipcMain.handle('hide-window', () => hideWindow());
+  ipcMain.handle('hide-window', () => { stopSpeaking(); hideWindow(); });
 
   // ── Interests & feeds ────────────────────────────────────────────────────
   ipcMain.handle('get-interests', () => interestManager.getEffective(activeProjectId));
@@ -720,6 +830,21 @@ function setupIPC() {
   ipcMain.handle('close-settings', () => {
     settingsWindow?.close();
   });
+
+  // ── Voice settings ─────────────────────────────────────────────────────────
+  ipcMain.handle('get-voice-settings', () => {
+    const raw = db.getState('voice_settings');
+    try { return raw ? JSON.parse(raw) : { enabled: false, autoDetect: true }; }
+    catch { return { enabled: false, autoDetect: true }; }
+  });
+
+  ipcMain.handle('set-voice-settings', (_, settings) => {
+    db.setState('voice_settings', JSON.stringify(settings));
+  });
+
+  ipcMain.handle('check-headphones', async () => {
+    return await detectHeadphones();
+  });
 }
 
 // ── App lifecycle ──────────────────────────────────────────────────────────
@@ -751,4 +876,5 @@ app.on('before-quit', () => {
   secretScanner?.stopAll();
   spendTracker?.stop();
   settingsWindow?.close();
+  stopSpeaking();
 });

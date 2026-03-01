@@ -15,6 +15,9 @@ const WATCH_EXTENSIONS = new Set([
   '.c', '.cpp', '.h', '.hpp',
 ]);
 
+const HOT_FILE_THRESHOLD = 5;
+const HOT_FILE_IDLE_MS   = 2 * 60 * 1000; // 2 min
+
 const IGNORE_PATTERNS = [
   /node_modules/,
   /\.git/,
@@ -34,8 +37,10 @@ class FileWatcher {
     this.db = database;
     this.watchers = new Map(); // projectId → chokidar watcher
     this.recentSaves = new Map(); // projectId → count in current window
+    this.fileSaveCounts = new Map(); // key `${projectId}:${relativePath}` → { count, timer }
     this.activeProjectId = null;
     this.onProjectSwitch = null; // callback(projectId)
+    this.onHotFile = null;       // callback(projectId, relativePath, absolutePath, saveCount)
   }
 
   watchDirectory(projectId, dirPath) {
@@ -90,6 +95,12 @@ class FileWatcher {
       this.watchers.delete(projectId);
       this.recentSaves.delete(projectId);
     }
+    for (const [key] of this.fileSaveCounts) {
+      if (key.startsWith(`${projectId}:`)) {
+        clearTimeout(this.fileSaveCounts.get(key).timer);
+        this.fileSaveCounts.delete(key);
+      }
+    }
   }
 
   stopAll() {
@@ -114,6 +125,19 @@ class FileWatcher {
     // Track saves per window for activity detection
     const current = this.recentSaves.get(projectId) || 0;
     this.recentSaves.set(projectId, current + 1);
+
+    // Per-file hot-file tracking with 2-min debounce
+    const key = `${projectId}:${relativePath}`;
+    const entry = this.fileSaveCounts.get(key) || { count: 0, timer: null };
+    entry.count++;
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+      if (entry.count >= HOT_FILE_THRESHOLD && this.onHotFile) {
+        this.onHotFile(projectId, relativePath, filePath, entry.count);
+      }
+      this.fileSaveCounts.delete(key);
+    }, HOT_FILE_IDLE_MS);
+    this.fileSaveCounts.set(key, entry);
 
     // If this is a different project than the currently active one, notify
     if (this.activeProjectId !== projectId) {

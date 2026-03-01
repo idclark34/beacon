@@ -255,6 +255,40 @@
 
       <div class="divider"></div>
 
+      <!-- Voice -->
+      <div>
+        <div class="section-label">Voice</div>
+
+        <div class="row">
+          <div>
+            <div class="row-label">Enable Alfred's voice</div>
+            <div class="row-sub">Speaks check-ins aloud using the Daniel voice</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="voice-enabled" />
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+
+        <div style="height: 14px;"></div>
+
+        <div class="row">
+          <div>
+            <div class="row-label">Auto-detect headphones</div>
+            <div class="row-sub">Requires <code style="font-size:10px;color:var(--text-muted)">brew install switchaudio-osx</code></div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="voice-auto-detect" />
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+
+        <div style="height: 10px;"></div>
+        <div id="headphone-status" style="font-size:11px;color:var(--text-muted);text-align:right;min-height:14px;"></div>
+      </div>
+
+      <div class="divider"></div>
+
       <div id="saved">Saved</div>
 
     </div>
