@@ -115,6 +115,20 @@ class GitMonitor {
   }
 
   /**
+   * Returns the current branch name for a project, or null.
+   */
+  async getCurrentBranch(projectId) {
+    const watcher = this.watchers.get(projectId);
+    if (!watcher) return null;
+    try {
+      const branch = await watcher.git.revparse(['--abbrev-ref', 'HEAD']);
+      return branch.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Manually trigger a scan right now for a project.
    */
   async scanNow(projectId, hoursBack = 2) {

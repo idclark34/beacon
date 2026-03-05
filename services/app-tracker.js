@@ -11,10 +11,20 @@ const IGNORED_APPS = new Set([
   'Spotlight', 'Alfred', 'Raycast',
 ]);
 
+const DISTRACTION_DOMAINS = new Set([
+  'youtube.com', 'reddit.com', 'twitter.com', 'x.com',
+  'linkedin.com',
+]);
+
 class AppTracker {
   constructor() {
     this.currentApp = null;
+    this.currentUrl = null;
+    this.currentDomain = null;
+    this._lastSafariDomain = null;
+    this._lastSafariSeenAt = null;
     this.sessionApps = new Map(); // app → total seconds active
+    this.domainTime = new Map();  // domain → total seconds active
     this._intervalId = null;
     this._lastPollTime = null;
   }
@@ -49,17 +59,73 @@ class AppTracker {
             this.currentApp,
             (this.sessionApps.get(this.currentApp) || 0) + elapsed
           );
+          // Credit domain time if we were on a distraction site
+          if (this.currentDomain && DISTRACTION_DOMAINS.has(this.currentDomain)) {
+            this.domainTime.set(
+              this.currentDomain,
+              (this.domainTime.get(this.currentDomain) || 0) + elapsed
+            );
+          }
         }
 
         if (!this.sessionApps.has(app)) this.sessionApps.set(app, 0);
         this.currentApp = app;
         this._lastPollTime = now;
+
+        // If Safari is frontmost, grab the current URL
+        if (app === 'Safari') {
+          exec(
+            `osascript -e 'tell application "Safari" to return URL of current tab of front window'`,
+            (urlErr, urlOut) => {
+              if (urlErr) { this.currentUrl = null; this.currentDomain = null; return; }
+              const url = urlOut.trim();
+              this.currentUrl = url || null;
+              try {
+                this.currentDomain = url ? new URL(url).hostname.replace(/^www\./, '') : null;
+              } catch {
+                this.currentDomain = null;
+              }
+              if (this.currentDomain) {
+                this._lastSafariDomain = this.currentDomain;
+                this._lastSafariSeenAt = Date.now();
+              }
+            }
+          );
+        }
       }
     );
   }
 
   getCurrentApp() {
     return this.currentApp;
+  }
+
+  getCurrentUrl() {
+    return this.currentUrl;
+  }
+
+  // Returns the current domain, or the last Safari domain seen within 5 minutes
+  getCurrentDomain() {
+    if (this.currentDomain) return this.currentDomain;
+    const STALE_MS = 5 * 60 * 1000;
+    if (this._lastSafariDomain && this._lastSafariSeenAt && (Date.now() - this._lastSafariSeenAt) < STALE_MS) {
+      return this._lastSafariDomain;
+    }
+    return null;
+  }
+
+  // Minutes spent on a specific domain this session
+  getDomainMinutes(domain) {
+    return Math.round((this.domainTime.get(domain) || 0) / 60);
+  }
+
+  // Returns the active distraction domain + minutes if over threshold, else null
+  getActiveDistraction(thresholdMinutes = 20) {
+    const domain = this.getCurrentDomain();
+    if (!domain || !DISTRACTION_DOMAINS.has(domain)) return null;
+    const minutes = this.getDomainMinutes(domain);
+    if (minutes < thresholdMinutes) return null;
+    return { domain, minutes };
   }
 
   // Returns top N apps sorted by time spent, filtered to > 1 minute
@@ -71,5 +137,7 @@ class AppTracker {
       .filter(({ minutes }) => minutes > 0);
   }
 }
+
+module.exports.DISTRACTION_DOMAINS = DISTRACTION_DOMAINS;
 
 module.exports = AppTracker;

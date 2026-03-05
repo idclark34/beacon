@@ -254,6 +254,9 @@ function startCheckInTimer() {
 
     if (await maybeShowInactivityReturn()) return;    // highest priority — 3-day absence
     if (await maybeShowWeeklyRecap()) return;
+    if (await maybeShowBrowserDistraction()) return;  // 20min on distraction site
+    if (await maybeShowCommitRoast()) return;         // vague commit message
+    if (await maybeShowBranchRoast()) return;         // terrible branch name
     if (await maybeShowDistractionReturn()) return;   // 1hr distraction, 35% silent
     if (await maybeShowProjectSwitchWarning()) return;
     if (await maybeShowIntelDrop()) return;
@@ -368,6 +371,121 @@ async function maybeShowInactivityReturn() {
   const daysSince = Math.floor(hoursSince / 24);
   db.setState('last_inactivity_alert', new Date().toISOString());
   await triggerInactivityReturn(daysSince);
+  return true;
+}
+
+const BAD_COMMIT_RE = /^(fix|fixes|fixed|bug fix|bugfix|hotfix|quick fix|wip|update|updates|updated|changes|changed|misc|stuff|work|progress|save|commit|test|testing|temp|tmp|asdf|asd|lol|ok|done|final|cleanup|refactor|minor|small|patch|tweak|tweaks|more|other|stuff|various|some fixes?|more fixes?|minor fixes?|small fixes?|quick fixes?)\.?$/i;
+
+function findBadCommitMessage(subjects) {
+  return (subjects || []).find(s => BAD_COMMIT_RE.test(s.trim()));
+}
+
+// Standard branches that should never be roasted
+const SAFE_BRANCHES = new Set(['main', 'master', 'develop', 'dev', 'staging', 'production', 'release', 'HEAD']);
+
+const BAD_BRANCH_RE = /(?:^|[-_/])(final|wip|temp|tmp|test|testing|fix|fixes|new|old|asdf|lol|work|misc|stuff|backup|copy|untitled|v\d+)(?:[-_/]|$)/i;
+
+function isBadBranchName(branch) {
+  if (!branch || SAFE_BRANCHES.has(branch.toLowerCase())) return false;
+  // Repeating segments: fix-fix, final-final
+  const parts = branch.split(/[-_/]/);
+  if (parts.length > 1 && new Set(parts).size < parts.length) return true;
+  // Contains "final" anywhere
+  if (/final/i.test(branch)) return true;
+  return BAD_BRANCH_RE.test(branch);
+}
+
+async function maybeShowBranchRoast() {
+  if (!activeProjectId) return false;
+
+  const branch = await gitMonitor.getCurrentBranch(activeProjectId);
+  if (!branch || !isBadBranchName(branch)) return false;
+
+  // Don't re-roast the same branch
+  const lastRoasted = db.getState('last_branch_roast');
+  if (lastRoasted === branch) return false;
+
+  // 24hr cooldown regardless
+  const lastTime = db.getState('last_branch_roast_time');
+  if (lastTime && (Date.now() - new Date(lastTime)) < 24 * 60 * 60 * 1000) return false;
+
+  db.setState('last_branch_roast', branch);
+  db.setState('last_branch_roast_time', new Date().toISOString());
+  showWindow();
+  mainWindow.webContents.send('check-in-start');
+  try {
+    const message = await aiCharacter.generateBranchRoast({
+      branch,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+  } catch (err) {
+    console.error('[Main] Branch roast error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+  return true;
+}
+
+async function maybeShowCommitRoast() {
+  if (!activeProjectId) return false;
+
+  // Only fire once per session commit batch — track last roasted message
+  const lastRoasted = db.getState('last_commit_roast_message');
+  const lastRoastedTime = db.getState('last_commit_roast_time');
+
+  // 4hr cooldown
+  if (lastRoastedTime && (Date.now() - new Date(lastRoastedTime)) < 4 * 60 * 60 * 1000) return false;
+
+  const summary = db.getActivitySummary(activeProjectId, 2); // last 2 hours
+  const badMessage = findBadCommitMessage(summary?.subjects);
+  if (!badMessage) return false;
+
+  // Don't re-roast the same message
+  if (lastRoasted === badMessage) return false;
+
+  db.setState('last_commit_roast_message', badMessage);
+  db.setState('last_commit_roast_time', new Date().toISOString());
+  showWindow();
+  mainWindow.webContents.send('check-in-start');
+  try {
+    const message = await aiCharacter.generateCommitRoast({
+      message: badMessage,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+  } catch (err) {
+    console.error('[Main] Commit roast error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+  return true;
+}
+
+async function maybeShowBrowserDistraction() {
+  if (!appTracker) return false;
+  const distraction = appTracker.getActiveDistraction(20);
+  if (!distraction) return false;
+
+  // 2hr cooldown so Alfred doesn't repeat himself
+  const last = db.getState('last_browser_distraction_alert');
+  if (last && (Date.now() - new Date(last)) < 2 * 60 * 60 * 1000) return false;
+
+  db.setState('last_browser_distraction_alert', new Date().toISOString());
+  showWindow();
+  mainWindow.webContents.send('check-in-start');
+  try {
+    const message = await aiCharacter.generateBrowserDistraction({
+      domain: distraction.domain,
+      minutes: distraction.minutes,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    if (activeProjectId) db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+  } catch (err) {
+    console.error('[Main] Browser distraction error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
   return true;
 }
 

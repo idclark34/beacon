@@ -117,6 +117,11 @@ class AICharacter {
     if (this.appTracker) {
       const current = this.appTracker.getCurrentApp();
       if (current) lines.push(`Currently in: ${current}`);
+      const domain = this.appTracker.getCurrentDomain();
+      if (domain) {
+        const minutes = this.appTracker.getDomainMinutes(domain);
+        lines.push(`Current browser tab: ${domain}${minutes > 0 ? ` (${minutes} min this session)` : ''}`);
+      }
     }
     return lines.length > 0 ? `\n\nCurrent context:\n${lines.join('\n')}` : '';
   }
@@ -575,6 +580,90 @@ class AICharacter {
   }
 
   /**
+   * Fires when the current branch name is vague, lazy, or desperate.
+   */
+  async generateBranchRoast({ branch, onChunk }) {
+    const client = this._getClient();
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [branch roast], Ian is working on a branch with a terrible name. One sentence. Name the branch exactly. Dry. Let the name do most of the work — your job is just to hold up the mirror. "You\'re on \'final-final-v2\', Ian. I\'ve seen this branch before. Different repo, same energy."';
+    const messages = [{
+      role: 'user',
+      content: `[branch roast]\nCurrent branch: "${branch}"`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 80,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
+   * Fires when a recent commit message is vague or lazy.
+   */
+  async generateCommitRoast({ message, onChunk }) {
+    const client = this._getClient();
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [commit roast], Ian just pushed a commit with a terrible message. One sentence. Dry. Name the message exactly as he wrote it. Don\'t tell him what a good commit message looks like — you\'re not a tutorial. Just let him feel it. "You pushed \'fix stuff.\' That\'s not a commit message, Ian. That\'s a confession."';
+    const messages = [{
+      role: 'user',
+      content: `[commit roast]\nCommit message: "${message}"`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 80,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
+   * Fires when Ian has been on a distraction site for 20+ min.
+   */
+  async generateBrowserDistraction({ domain, minutes, onChunk }) {
+    const client = this._getClient();
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [browser distraction], Ian has been on a non-work site for a while. One sentence. Dry. Specific — name the site. Don\'t lecture. Don\'t ask him to stop. Just name what you see and let it land. "Forty minutes on YouTube, Ian. The code\'s still there." That energy.';
+    const messages = [{
+      role: 'user',
+      content: `[browser distraction]\nSite: ${domain}\nTime there: ${minutes} minutes`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 80,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
    * Fires once when Ian opens the app after 3+ days of zero coding activity.
    */
   async generateInactivityReturn({ daysSince, projectId, onChunk }) {
@@ -776,6 +865,11 @@ class AICharacter {
         const list = appSummary.map(({ app, minutes }) => `${app} (${minutes}m)`).join(', ');
         contextLines.push(`Apps this session: ${list}`);
       }
+      const domain = this.appTracker.getCurrentDomain();
+      if (domain) {
+        const minutes = this.appTracker.getDomainMinutes(domain);
+        contextLines.push(`Current browser tab: ${domain}${minutes > 0 ? ` (${minutes} min this session)` : ''}`);
+      }
     }
 
     if (summary?.totalCommits > 0) {
@@ -819,7 +913,7 @@ class AICharacter {
       ? '\n\nYou have a visual of the user and their environment right now. Reference what you observe — but only to reflect their dedication back at them. A cluttered desk is evidence of focus. Dim lighting is atmosphere. Cold coffee is commitment. The hour visible in the scene, the posture, the surroundings — read them the way Alfred reads the Batcave after a long night. With quiet, knowing respect. Never name anything as a problem. Only as evidence. Weave one brief observation naturally into your message — never make it the focus.'
       : '';
 
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[checking in]", say one thing -- an observation or a question -- based on the context provided. React specifically to what you see. "Currently in" tells you what app is focused right now -- use it. If they\'re in a browser instead of their editor, that\'s worth a comment. "Past week" and "Files that keep coming up" give you longitudinal pattern -- use them to make observations that span days, not just today. If there were commits, use get_git_diff to see what actually changed -- this is the most direct signal. Use read_file when a frequently-edited file would add more color. Skip tools if the context already tells the story.' + visualPrompt;
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[checking in]", say one thing -- an observation or a question -- based on the context provided. React specifically to what you see. "Currently in" tells you what app is focused right now -- use it. "Current browser tab" tells you exactly what site Ian is on -- if it\'s YouTube, Reddit, Twitter, LinkedIn, or anything that isn\'t work, name it directly. "Past week" and "Files that keep coming up" give you longitudinal pattern -- use them to make observations that span days, not just today. If there were commits, use get_git_diff to see what actually changed -- this is the most direct signal. Use read_file when a frequently-edited file would add more color. Skip tools if the context already tells the story.' + visualPrompt;
 
     const textContent = `${trigger}${contextStr}`;
     const userContent = imageBase64
