@@ -1,5 +1,6 @@
 'use strict';
 
+const path = require('path');
 const { exec } = require('child_process');
 
 const POLL_INTERVAL_MS = 15 * 1000; // 15 seconds
@@ -27,11 +28,20 @@ class AppTracker {
     this.domainTime = new Map();  // domain → total seconds active
     this._intervalId = null;
     this._lastPollTime = null;
+    // Claude Code session
+    this.claudeActive = false;
+    this.claudeProjectPath = null;
+    this.claudeProjectName = null;
+    this.claudeSessionStart = null;
   }
 
   start() {
     this._poll();
-    this._intervalId = setInterval(() => this._poll(), POLL_INTERVAL_MS);
+    this._pollClaude();
+    this._intervalId = setInterval(() => {
+      this._poll();
+      this._pollClaude();
+    }, POLL_INTERVAL_MS);
     console.log('[AppTracker] Started');
   }
 
@@ -126,6 +136,44 @@ class AppTracker {
     const minutes = this.getDomainMinutes(domain);
     if (minutes < thresholdMinutes) return null;
     return { domain, minutes };
+  }
+
+  _pollClaude() {
+    exec('pgrep -x claude', (err, stdout) => {
+      const pid = stdout?.trim().split('\n')[0];
+      if (err || !pid) {
+        this.claudeActive = false;
+        this.claudeProjectPath = null;
+        this.claudeProjectName = null;
+        this.claudeSessionStart = null;
+        return;
+      }
+      exec(
+        `lsof -a -p ${pid} -d cwd -Fn 2>/dev/null | grep '^n' | cut -c2-`,
+        (err2, cwdOut) => {
+          const projectPath = cwdOut?.trim() || null;
+          const projectName = projectPath ? path.basename(projectPath) : null;
+          if (!this.claudeActive) this.claudeSessionStart = Date.now();
+          this.claudeActive = true;
+          this.claudeProjectPath = projectPath;
+          this.claudeProjectName = projectName;
+        }
+      );
+    });
+  }
+
+  // Returns current Claude Code session info, or null if not running
+  getClaudeSession() {
+    if (!this.claudeActive) return null;
+    const minutes = this.claudeSessionStart
+      ? Math.round((Date.now() - this.claudeSessionStart) / 60000)
+      : 0;
+    return {
+      active: true,
+      projectPath: this.claudeProjectPath,
+      projectName: this.claudeProjectName,
+      minutes,
+    };
   }
 
   // Returns top N apps sorted by time spent, filtered to > 1 minute
