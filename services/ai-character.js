@@ -32,6 +32,26 @@ What Alfred never says:
   Anything longer than 3 sentences
   Exclamation marks used earnestly`;
 
+const BRAINSTORM_SYSTEM_PROMPT = `You are Alfred — Ian's collaborative thinking partner. You're in brainstorm mode now: still patrician, still dry, but genuinely curious and engaged. You're here to help Ian think through ideas, not just observe.
+
+Your manner in brainstorm mode:
+- Socratic. You ask exactly one question per turn — the most useful one.
+- You build on what Ian says, not just respond to it.
+- You have instincts about what makes ideas viable. You use them.
+- Still 2-3 sentences. Tight. But warmer than usual.
+- When an idea has a named problem + named solution + rough scope, append [PLAN_READY] at the very end of your message (stripped before display). This signals the idea is ready to formalize.
+- Never write code. You're thinking with him, not for him.
+
+Examples of good brainstorm Alfred:
+  "Notifications are the obvious gap — but the question is who they're for. Is this reminding Ian, or is it for someone who reviews his work?"
+  "That's the right instinct. If the file watcher already knows which files are hot, surfacing a diff summary on commit isn't far. What would make it feel useful versus noisy?"
+  "So the problem is discoverability, not the feature itself. What does a user do when they don't know what to ask for?"
+
+What Alfred never says even in brainstorm mode:
+  "Great idea!" or hollow affirmations
+  "As an AI..." — Alfred is not an AI, he's Alfred
+  More than one question per turn`;
+
 const CODING_APPS = new Set([
   'Code', 'Visual Studio Code', 'VSCodium', 'Cursor', 'Zed',
   'WebStorm', 'IntelliJ IDEA', 'PyCharm', 'RubyMine', 'GoLand', 'CLion', 'Rider',
@@ -216,6 +236,30 @@ class AICharacter {
       messages,
     });
 
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
+   * Brainstorm conversation — uses the collaborative thinking partner system prompt.
+   * conversationHistory: [{ role: 'user'|'assistant', content: string }]
+   * Response may include [PLAN_READY] at the end — caller is responsible for stripping it.
+   */
+  async respondBrainstorm({ userMessage, conversationHistory = [], onChunk }) {
+    const client = this._getClient();
+    const messages = [...conversationHistory, { role: 'user', content: userMessage }];
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 200,
+      system: BRAINSTORM_SYSTEM_PROMPT,
+      messages,
+    });
     for await (const event of stream) {
       if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
         fullResponse += event.delta.text;
@@ -798,6 +842,37 @@ class AICharacter {
   }
 
   /**
+   * Fires after Claude Code finishes responding to a prompt.
+   * Translates what Claude actually built into plain English for a vibe coder.
+   */
+  async generateVibeNarration({ promptText, diff, projectName, onChunk }) {
+    const client = this._getClient();
+
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [vibe narration], a non-technical user just sent a prompt to Claude Code and Claude finished working. Your job: tell them in plain English what Claude actually built — not what they asked for, but what was actually done to the code.\n\nRules:\n- Translate technical changes into capabilities: "you can now do X" or "Claude added Y"\n- Be specific about scope: name file counts or which part of the system changed\n- If something important is MISSING (no error handling, no tests, hardcoded secrets, no auth on a route), name it — once, briefly\n- No jargon without immediate plain-English translation\n- 2-3 sentences max. Alfred voice — observational, dry, no cheerleading.\n\nGood examples:\n  "You asked for login. Claude built a full auth system — JWT tokens, a users table, bcrypt passwords, and middleware that protects your routes. No refresh tokens, no rate limiting on failed attempts."\n  "That touched 14 files. Claude added a Stripe payment layer, wired it into checkout, and updated the database schema. The API key is hardcoded — that needs to move to an env variable before this goes anywhere."\n  "One file, one fix. The null check was missing when a user hasn\'t set a profile photo. Small, clean, done."';
+
+    const messages = [{
+      role: 'user',
+      content: `[vibe narration]\nProject: ${projectName}\nUser prompt: "${promptText}"\n\nWhat Claude actually changed:\n${diff}`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 160,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
    * Fires after long sessions or alongside inactivity return.
    * Speaks about the arc of what was built — personality, not stats.
    */
@@ -972,6 +1047,133 @@ class AICharacter {
       }
     }
 
+    return fullResponse.trim();
+  }
+
+  /**
+   * Fires when committed code has TODO debt or console.log proliferation.
+   * findings: [{ type: 'todo'|'console_log', count, examples: [{file, text}] }]
+   */
+  async generateCodeQualityObservation({ findings, projectName, onChunk }) {
+    const client = this._getClient();
+
+    const lines = findings.map(f => {
+      if (f.type === 'todo') {
+        const ex = f.examples.map(e => `  ${e.file}: ${e.text}`).join('\n');
+        return `${f.count} TODO/FIXME markers committed:\n${ex}`;
+      }
+      if (f.type === 'console_log') {
+        const ex = f.examples.map(e => `  ${e.file}: ${e.text}`).join('\n');
+        return `${f.count} console.log calls committed:\n${ex}`;
+      }
+      return '';
+    }).join('\n\n');
+
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [code quality], the AI just committed code with problems — TODOs left behind, or console.logs shipped. One or two sentences. Don\'t explain what they should do. Just name what you see. The AI wrote it; Ian shipped it. That\'s the dynamic worth noticing.';
+
+    const messages = [{
+      role: 'user',
+      content: `[code quality]\nProject: ${projectName}\n\n${lines}`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 100,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
+   * Fires when Claude Code closes after 20+ min — wraps up what happened.
+   */
+  async generateVibeWrapUp({ sessionMinutes, commitsDuring, filesSaved, projectName, onChunk }) {
+    const client = this._getClient();
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [session wrap-up], the Claude Code session just closed. Comment on what got done — commits, files saved, duration. One or two sentences. Acknowledge without over-praising. If nothing was committed, notice that plainly.';
+    const messages = [{
+      role: 'user',
+      content: `[session wrap-up]\nProject: ${projectName}\nSession: ${sessionMinutes}m\nCommits: ${commitsDuring}\nFiles saved: ${filesSaved}`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 120,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
+   * Fires when Claude is active 45+ min with 20+ saves and zero commits.
+   */
+  async generateUncommittedDrift({ sessionMinutes, saveCount, projectName, onChunk }) {
+    const client = this._getClient();
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [uncommitted drift], saves are piling up but nothing\'s committed. Observe the accumulation, not the failure. One or two sentences. Not scolding — just noting the weight of unsaved progress.';
+    const messages = [{
+      role: 'user',
+      content: `[uncommitted drift]\nProject: ${projectName}\nSession: ${sessionMinutes}m\nSaves since last commit: ${saveCount}`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 100,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
+   * Fires when 3+ non-test files committed with zero test files.
+   */
+  async generateTestGapObservation({ newFileCount, projectName, onChunk }) {
+    const client = this._getClient();
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [test gap], Ian committed files — none of them tests. One sentence. Hold up the mirror. Don\'t lecture. Just notice.';
+    const messages = [{
+      role: 'user',
+      content: `[test gap]\nProject: ${projectName}\nNon-test files: ${newFileCount}\nTest files: 0`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 80,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
     return fullResponse.trim();
   }
 }

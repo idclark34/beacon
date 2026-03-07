@@ -123,6 +123,33 @@ html, body {
 .btn-go:hover { opacity: 0.85; }
 .btn-go:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* ── Alfred ASCII character ── */
+#alfred-section {
+  display: flex;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 2px 0;
+}
+
+#alfred-art {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--accent);
+  text-align: center;
+  white-space: pre;
+  user-select: none;
+  transition: color 0.4s ease, opacity 0.4s ease;
+  opacity: 0.88;
+  letter-spacing: 0.02em;
+}
+
+#alfred-art.idle   { opacity: 0.38; }
+#alfred-art[data-mood="roast"]    { color: #facc15; }
+#alfred-art[data-mood="alert"]    { color: #f87171; }
+#alfred-art[data-mood="watching"] { color: #60a5fa; }
+#alfred-art[data-mood="welcome"]  { color: #a78bfa; }
+
 /* ── Popup ── */
 #popup {
   padding: 14px 16px 0;
@@ -188,6 +215,141 @@ html, body {
   50%      { opacity: 0; }
 }
 
+/* ── Action button ── */
+#action-wrap { padding: 0 16px 10px; flex-shrink: 0; }
+#action-wrap.hidden { display: none; }
+#action-btn {
+  width: 100%;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 4px;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+#action-btn:hover { background: rgba(74, 222, 128, 0.1); }
+#action-btn:disabled { opacity: 0.4; cursor: default; }
+
+/* ── Code quality proposal ── */
+#proposal-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 16px 8px;
+  overflow: hidden;
+  flex: 1;
+}
+
+#proposal-header {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+#proposal-files {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 0;
+}
+
+.proposal-file {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.proposal-file-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.proposal-file-name {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proposal-badge {
+  font-size: 9px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.proposal-removals {
+  border-top: 1px solid var(--border);
+  padding: 4px 8px;
+}
+
+.proposal-removal {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: #f87171;
+  line-height: 1.7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.proposal-removal::before { content: '− '; opacity: 0.55; }
+
+.proposal-removal-more {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dim);
+  line-height: 1.7;
+}
+
+#proposal-btns {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+#proposal-apply {
+  flex: 1;
+  padding: 6px;
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 4px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+#proposal-apply:hover    { background: rgba(74, 222, 128, 0.1); }
+#proposal-apply:disabled { opacity: 0.4; cursor: default; }
+
+#proposal-skip {
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+#proposal-skip:hover { border-color: var(--border-hi); }
+
 /* ── Chat input ── */
 #chat-area {
   max-height: 0;
@@ -218,6 +380,18 @@ html, body {
 /* pause countdown while user is interacting */
 #popup.chatting #countdown-bar.draining {
   animation-play-state: paused;
+}
+
+/* ── Brainstorm mode ── */
+#popup.brainstorm #alfred-art { color: #60a5fa; } /* watching blue */
+#popup.brainstorm #chat-input { border-color: rgba(96, 165, 250, 0.35); }
+#popup.brainstorm #chat-input:focus { border-color: #60a5fa; }
+#popup.brainstorm #popup-badge { border-color: rgba(96, 165, 250, 0.4); }
+#popup.brainstorm #popup-badge::after {
+  content: ' · thinking';
+  color: #60a5fa;
+  font-size: 9px;
+  opacity: 0.8;
 }
 
 /* ── Countdown bar ── */

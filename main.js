@@ -17,9 +17,11 @@ const { AICharacter, CODING_APPS, QUOTES } = require('./services/ai-character');
 const AppTracker      = require('./services/app-tracker');
 const InterestManager = require('./services/interest-manager');
 const FeedFetcher     = require('./services/feed-fetcher');
-const DepMonitor      = require('./services/dep-monitor');
-const SecretScanner   = require('./services/secret-scanner');
-const SpendTracker    = require('./services/spend-tracker');
+const DepMonitor           = require('./services/dep-monitor');
+const SecretScanner        = require('./services/secret-scanner');
+const SpendTracker         = require('./services/spend-tracker');
+const CodeQualityScanner   = require('./services/code-quality-scanner');
+const PromptWatcher        = require('./services/prompt-watcher');
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -27,11 +29,14 @@ let mainWindow = null;
 let settingsWindow = null;
 let tray = null;
 let db, gitMonitor, fileWatcher, activityTracker, aiCharacter, appTracker;
-let interestManager, feedFetcher, depMonitor, secretScanner, spendTracker;
+let interestManager, feedFetcher, depMonitor, secretScanner, spendTracker, codeQualityScanner, promptWatcher;
 let activeProjectId = null;
 let checkInTimerId  = null;
 let lastCodingAppSeen = Date.now(); // tracks last time a coding app was focused
 const recentlyObservedFiles = new Map(); // relativePath → last observation timestamp (ms)
+let pendingCodeFix  = null; // { projectId, findings } — set after a code quality observation
+let pendingRevert   = null; // { repoPath, files }    — set after applying a code quality fix
+let brainstormHistory = []; // { role, content }[]   — ephemeral brainstorm session
 
 // ── Window ─────────────────────────────────────────────────────────────────
 
@@ -40,9 +45,9 @@ function createWindow() {
 
   mainWindow = new BrowserWindow({
     width: 320,
-    height: 260,      // compact — just the popup card
+    height: 340,      // includes Alfred ASCII character
     x: width - 340,
-    y: height - 200,
+    y: height - 280,
     alwaysOnTop: true,
     frame: false,
     transparent: true,
@@ -163,6 +168,17 @@ async function initServices() {
   db.initialize();
   appTracker   = new AppTracker();
   appTracker.start();
+  appTracker.onClaudeSessionEnd = async (sessionMinutes, projectName, sessionStartMs) => {
+    if (!mainWindow || !activeProjectId) return;
+    db.setState('last_claude_session_end_time', new Date().toISOString());
+    const sessionStart = new Date(sessionStartMs);
+    const commitsDuring = db.getCommitCountSince(activeProjectId, sessionStart);
+    const activity = db.getRecentActivity(activeProjectId, Math.ceil(sessionMinutes / 60) + 1);
+    const filesSaved = activity.filter(
+      a => a.event_type === 'file_save' && new Date(a.timestamp) >= sessionStart
+    ).length;
+    await triggerVibeWrapUp(sessionMinutes, projectName, commitsDuring, filesSaved);
+  };
   aiCharacter  = new AICharacter(db, appTracker);
   gitMonitor   = new GitMonitor(db);
   fileWatcher  = new FileWatcher(db);
@@ -203,9 +219,12 @@ async function initServices() {
     await triggerFileObservation(relativePath, content, saveCount);
   };
 
-  gitMonitor.onSignificantEvent = (projectId, commitCount) => {
+  gitMonitor.onSignificantEvent = async (projectId, commitCount, changedFiles = []) => {
     console.log(`[Main] ${commitCount} new commits on project ${projectId}`);
-    if (projectId === activeProjectId) scheduleCheckIn(1500);
+    if (projectId === activeProjectId) {
+      await maybeShowTestGap(projectId, changedFiles);
+      scheduleCheckIn(1500);
+    }
   };
 
   activityTracker.start();
@@ -243,6 +262,34 @@ async function initServices() {
   spendTracker.onLowUsage = (pct, spent, budget) =>
     triggerSpendAlert('low_usage', { pct, spent, budget });
   spendTracker.start();
+
+  codeQualityScanner = new CodeQualityScanner();
+  for (const project of db.getProjects()) {
+    if (project.repo_path) codeQualityScanner.watchProject(project.id, project.repo_path);
+  }
+  codeQualityScanner.onFindingsFound = (projectId, findings) => {
+    if (projectId !== activeProjectId) return;
+    const last = db.getState('last_code_quality_alert');
+    if (last && (Date.now() - new Date(last)) < 4 * 60 * 60 * 1000) return;
+    triggerCodeQualityObservation(projectId, findings);
+  };
+
+  // ── Prompt watcher — reads Claude Code JSONL sessions ─────────────────────
+  promptWatcher = new PromptWatcher();
+  for (const project of db.getProjects()) {
+    if (project.repo_path) promptWatcher.watchProject(project.id, project.repo_path);
+  }
+  promptWatcher.onPromptComplete = async (projectId, repoPath, promptText) => {
+    if (projectId !== activeProjectId || !mainWindow) return;
+    // 8-minute cooldown — don't fire on every tiny prompt
+    const last = db.getState('last_vibe_narration_time');
+    if (last && (Date.now() - new Date(last)) < 8 * 60 * 1000) return;
+    // Need a diff to narrate — skip if nothing changed
+    const diff = aiCharacter._executeDiff(repoPath, 3);
+    if (!diff || diff.startsWith('Error') || diff.trim() === 'STAT:\n\nDIFF:') return;
+    db.setState('last_vibe_narration_time', new Date().toISOString());
+    await triggerVibeNarration(projectId, promptText, diff);
+  };
 }
 
 // ── Check-in ───────────────────────────────────────────────────────────────
@@ -259,6 +306,7 @@ function startCheckInTimer() {
     if (await maybeShowWeeklyRecap()) return;
     if (await maybeShowBrowserDistraction()) return;  // 20min on distraction site
     if (await maybeShowClaudeSessionComment()) return; // claude code session running
+    if (await maybeShowUncommittedDrift()) return;    // 45min+ session, 20+ saves, no commits
     if (await maybeShowCommitRoast()) return;         // vague commit message
     if (await maybeShowBranchRoast()) return;         // terrible branch name
     if (await maybeShowDistractionReturn()) return;   // 1hr distraction, 35% silent
@@ -290,7 +338,7 @@ async function maybeShowIntroCheckIn() {
   db.setState('intro_shown', 'true');
   db.setState('last_checkin_time', new Date().toISOString());
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'welcome');
   try {
     const message = await aiCharacter.generateIntroCheckIn({
       projectId: activeProjectId,
@@ -317,7 +365,7 @@ async function maybeShowWeeklyRecap() {
   db.setState('last_recap_date', new Date().toISOString());
   db.setState('last_checkin_time', new Date().toISOString());
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'normal');
   try {
     const message = await aiCharacter.generateWeeklyRecap({
       projectId: activeProjectId,
@@ -345,7 +393,7 @@ async function maybeShowIntelDrop() {
   db.setState('last_intel_drop_time', new Date().toISOString());
   db.markFeedItemsSurfaced(items.map(i => i.id));
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'watching');
   try {
     const message = await aiCharacter.generateIntelDrop({
       items,
@@ -416,7 +464,7 @@ async function maybeShowBranchRoast() {
   db.setState('last_branch_roast', branch);
   db.setState('last_branch_roast_time', new Date().toISOString());
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'roast');
   try {
     const message = await aiCharacter.generateBranchRoast({
       branch,
@@ -451,7 +499,7 @@ async function maybeShowCommitRoast() {
   db.setState('last_commit_roast_message', badMessage);
   db.setState('last_commit_roast_time', new Date().toISOString());
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'roast');
   try {
     const message = await aiCharacter.generateCommitRoast({
       message: badMessage,
@@ -477,7 +525,7 @@ async function maybeShowClaudeSessionComment() {
 
   db.setState('last_claude_session_key', sessionKey);
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'watching');
   try {
     const message = await aiCharacter.generateClaudeSessionComment({
       projectName: session.projectName || 'unknown',
@@ -504,7 +552,7 @@ async function maybeShowBrowserDistraction() {
 
   db.setState('last_browser_distraction_alert', new Date().toISOString());
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'watching');
   try {
     const message = await aiCharacter.generateBrowserDistraction({
       domain: distraction.domain,
@@ -756,7 +804,7 @@ async function triggerCheckIn() {
   stopSpeaking();
   db.setState('last_checkin_time', new Date().toISOString());
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'normal');
 
   const camRaw = db.getState('camera_settings');
   const camSettings = camRaw ? (() => { try { return JSON.parse(camRaw); } catch { return {}; } })() : {};
@@ -794,7 +842,7 @@ async function triggerSecretAlert(projectId, findings, commitHash) {
   if (!mainWindow) return;
   db.setState('last_secret_alert_time', new Date().toISOString());
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'alert');
   try {
     const message = await aiCharacter.generateSecretAlert({
       findings,
@@ -813,7 +861,7 @@ async function triggerDepAlert(projectId, issues) {
   if (!mainWindow) return;
   db.setState('last_dep_alert_time', new Date().toISOString());
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'alert');
   try {
     const message = await aiCharacter.generateDepAlert({
       issues,
@@ -830,7 +878,7 @@ async function triggerDepAlert(projectId, issues) {
 async function triggerSpendAlert(type, data) {
   if (!mainWindow) return;
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'alert');
   try {
     const message = await aiCharacter.generateSpendAlert({
       type,
@@ -852,7 +900,7 @@ async function triggerSpendAlert(type, data) {
 async function triggerDistractionReturn(distractionMinutes) {
   if (!mainWindow || !activeProjectId) return;
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'normal');
   try {
     const message = await aiCharacter.generateDistractionReturn({
       distractionMinutes,
@@ -870,7 +918,7 @@ async function triggerInactivityReturn(daysSince) {
   if (!mainWindow || !activeProjectId) return;
   db.setState('last_checkin_time', new Date().toISOString());
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'welcome');
   try {
     const message = await aiCharacter.generateInactivityReturn({
       daysSince,
@@ -890,7 +938,7 @@ async function triggerInactivityReturn(daysSince) {
 async function triggerProjectSwitchWarning(type, names, daySpan) {
   if (!mainWindow || !activeProjectId) return;
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'roast');
   try {
     const message = await aiCharacter.generateProjectSwitchWarning({
       type,
@@ -909,7 +957,7 @@ async function triggerProjectSwitchWarning(type, names, daySpan) {
 async function triggerQuote(quote) {
   if (!mainWindow || !activeProjectId) return;
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'normal');
   try {
     const message = await aiCharacter.generateQuote({
       quote,
@@ -927,7 +975,7 @@ async function triggerFileObservation(filePath, content, saveCount) {
   if (!mainWindow || !activeProjectId) return;
   stopSpeaking();
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'watching');
   try {
     const message = await aiCharacter.generateFileObservation({
       filePath,
@@ -948,7 +996,7 @@ async function triggerProgressNarrative() {
   if (!mainWindow || !activeProjectId) return;
   db.setState('last_progress_date', new Date().toISOString());
   showWindow();
-  mainWindow.webContents.send('check-in-start');
+  mainWindow.webContents.send('check-in-start', 'normal');
   try {
     const message = await aiCharacter.generateProgressNarrative({
       projectId: activeProjectId,
@@ -962,7 +1010,218 @@ async function triggerProgressNarrative() {
   }
 }
 
+async function triggerVibeNarration(projectId, promptText, diff) {
+  if (!mainWindow) return;
+  const project = db.getProject(projectId);
+  stopSpeaking();
+  showWindow();
+  mainWindow.webContents.send('check-in-start', 'watching');
+  try {
+    const message = await aiCharacter.generateVibeNarration({
+      promptText,
+      diff,
+      projectName: project?.name || 'unknown',
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(projectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+    if (await shouldSpeak()) speak(message);
+  } catch (err) {
+    console.error('[Main] Vibe narration error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
+async function triggerCodeQualityObservation(projectId, findings) {
+  if (!mainWindow) return;
+  db.setState('last_code_quality_alert', new Date().toISOString());
+  const project = db.getProject(projectId);
+  showWindow();
+  mainWindow.webContents.send('check-in-start', 'watching');
+  try {
+    const message = await aiCharacter.generateCodeQualityObservation({
+      findings,
+      projectName: project?.name || 'unknown',
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(projectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+    pendingCodeFix = { projectId, findings };
+    mainWindow?.webContents.send('check-in-action', { actionId: 'fix-code-quality', label: 'Review changes →' });
+    if (await shouldSpeak()) speak(message);
+  } catch (err) {
+    console.error('[Main] Code quality observation error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
+// ── Vibe coding awareness ───────────────────────────────────────────────────
+
+async function triggerVibeWrapUp(sessionMinutes, projectName, commitsDuring, filesSaved) {
+  if (!mainWindow || !activeProjectId) return;
+  stopSpeaking();
+  showWindow();
+  mainWindow.webContents.send('check-in-start', 'watching');
+  try {
+    const message = await aiCharacter.generateVibeWrapUp({
+      sessionMinutes,
+      commitsDuring,
+      filesSaved,
+      projectName: projectName || 'unknown',
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+    if (await shouldSpeak()) speak(message);
+  } catch (err) {
+    console.error('[Main] Vibe wrap-up error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
+async function maybeShowUncommittedDrift() {
+  if (!appTracker || !activeProjectId) return false;
+  const session = appTracker.getClaudeSession();
+  if (!session || session.minutes < 45) return false;
+
+  const last = db.getState('last_uncommitted_drift_alert');
+  if (last && (Date.now() - new Date(last)) < 2 * 60 * 60 * 1000) return false;
+
+  const sessionStart = new Date(appTracker.claudeSessionStart);
+  if (db.getCommitCountSince(activeProjectId, sessionStart) > 0) return false;
+
+  const activity = db.getRecentActivity(activeProjectId, Math.ceil(session.minutes / 60) + 1);
+  const saveCount = activity.filter(
+    a => a.event_type === 'file_save' && new Date(a.timestamp) >= sessionStart
+  ).length;
+  if (saveCount <= 20) return false;
+
+  db.setState('last_uncommitted_drift_alert', new Date().toISOString());
+  showWindow();
+  mainWindow.webContents.send('check-in-start', 'watching');
+  try {
+    const message = await aiCharacter.generateUncommittedDrift({
+      sessionMinutes: session.minutes,
+      saveCount,
+      projectName: session.projectName || 'unknown',
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+  } catch (err) {
+    console.error('[Main] Uncommitted drift error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+  return true;
+}
+
+const TEST_FILE_RE = /(?:\.test\.|\.spec\.|__tests__|[/\\]tests?[/\\])/i;
+
+async function maybeShowTestGap(projectId, changedFiles = []) {
+  if (!changedFiles.length) return;
+
+  const claudeRecent = appTracker.getClaudeSession() ||
+    (() => {
+      const t = db.getState('last_claude_session_end_time');
+      return t && Date.now() - new Date(t) < 30 * 60 * 1000;
+    })();
+  if (!claudeRecent) return;
+
+  const last = db.getState('last_test_gap_alert');
+  if (last && (Date.now() - new Date(last)) < 24 * 60 * 60 * 1000) return;
+
+  const testFiles = changedFiles.filter(f => TEST_FILE_RE.test(f));
+  const nonTest   = changedFiles.filter(f => !TEST_FILE_RE.test(f));
+  if (testFiles.length > 0 || nonTest.length < 3) return;
+
+  db.setState('last_test_gap_alert', new Date().toISOString());
+  const project = db.getProject(projectId);
+  showWindow();
+  mainWindow.webContents.send('check-in-start', 'watching');
+  try {
+    const message = await aiCharacter.generateTestGapObservation({
+      newFileCount: nonTest.length,
+      projectName: project?.name || 'unknown',
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(projectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+  } catch (err) {
+    console.error('[Main] Test gap error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
 // ── IPC ────────────────────────────────────────────────────────────────────
+
+// ── Code quality — proposal & apply ───────────────────────────────────────
+
+const QUALITY_PATTERNS = {
+  console_log: /^\s*console\.(log|warn|error|debug|info)\s*\(/,
+  todo:        /^\s*(\/\/|#)\s*(TODO|FIXME|HACK|XXX)\b/i,
+};
+
+/** Scan files for matches and send a proposal to the renderer — no writes. */
+async function proposeCodeQualityFix({ projectId, findings }) {
+  const project = db.getProject(projectId);
+  if (!project?.repo_path) return;
+
+  const repoPath = project.repo_path;
+  const proposalFiles = [];
+
+  for (const finding of findings) {
+    const { pattern, files } = await findFilesToFix(repoPath, finding.type);
+    for (const relPath of files) {
+      const removals = collectRemovals(path.join(repoPath, relPath), pattern);
+      if (removals.length > 0) proposalFiles.push({ relPath, type: finding.type, removals });
+    }
+  }
+
+  if (proposalFiles.length === 0) {
+    mainWindow?.webContents.send('action-result', { message: 'Nothing to clean.' });
+    return;
+  }
+
+  mainWindow?.webContents.send('code-quality-proposal', { projectId, files: proposalFiles });
+}
+
+function findFilesToFix(repoPath, type) {
+  return new Promise(resolve => {
+    const pattern  = QUALITY_PATTERNS[type] ?? QUALITY_PATTERNS.todo;
+    const grepExpr = type === 'console_log'
+      ? 'console\\.(log|warn|error|debug|info)'
+      : '(TODO|FIXME|HACK|XXX)';
+
+    execFile('git', ['grep', '-l', '-E', grepExpr,
+      '--', '*.js', '*.ts', '*.jsx', '*.tsx', '*.mjs', '*.cjs',
+    ], { cwd: repoPath, timeout: 10000 }, (err, stdout) => {
+      const files = (stdout || '').trim().split('\n').filter(Boolean)
+        .filter(f => !TEST_FILE_RE.test(f));
+      resolve({ pattern, files });
+    });
+  });
+}
+
+/** Return lines matching pattern with their 1-based line number and trimmed text. */
+function collectRemovals(absPath, pattern) {
+  try {
+    return fs.readFileSync(absPath, 'utf8').split('\n').reduce((acc, text, i) => {
+      if (pattern.test(text)) acc.push({ line: i + 1, text: text.trim().slice(0, 100) });
+      return acc;
+    }, []);
+  } catch { return []; }
+}
+
+/** Remove lines matching pattern from a single file. Returns count removed. */
+function removeMatchingLines(absPath, pattern) {
+  try {
+    const lines    = fs.readFileSync(absPath, 'utf8').split('\n');
+    const filtered = lines.filter(l => !pattern.test(l));
+    const removed  = lines.length - filtered.length;
+    if (removed > 0) fs.writeFileSync(absPath, filtered.join('\n'), 'utf8');
+    return removed;
+  } catch { return 0; }
+}
 
 function setupIPC() {
   ipcMain.handle('get-projects',        () => db.getProjects());
@@ -975,11 +1234,13 @@ function setupIPC() {
       gitMonitor.watchRepo(project.id, repo_path);
       depMonitor.watchProject(project.id, repo_path);
       secretScanner.watchProject(project.id, repo_path);
+      codeQualityScanner.watchProject(project.id, repo_path);
+      promptWatcher.watchProject(project.id, repo_path);
     }
     activeProjectId = project.id;
     db.setState('active_project_id', project.id);
     // Resize to popup height after onboarding completes
-    mainWindow?.setSize(320, 260);
+    mainWindow?.setSize(320, 340);
     return project;
   });
 
@@ -1007,6 +1268,33 @@ function setupIPC() {
       mainWindow?.webContents.send('reply-complete', '');
     }
   });
+
+  ipcMain.handle('send-brainstorm', async (_, userMessage) => {
+    if (!mainWindow) return;
+    mainWindow.webContents.send('reply-start');
+    try {
+      let fullResponse = '';
+      await aiCharacter.respondBrainstorm({
+        userMessage,
+        conversationHistory: brainstormHistory.slice(-12),
+        onChunk: (chunk) => { fullResponse += chunk; },
+      });
+      const planReady = fullResponse.includes('[PLAN_READY]');
+      const clean = fullResponse.replace(/\s*\[PLAN_READY\]\s*/g, '').trim();
+      brainstormHistory.push({ role: 'user', content: userMessage });
+      brainstormHistory.push({ role: 'assistant', content: clean });
+      mainWindow?.webContents.send('reply-chunk', clean);
+      mainWindow?.webContents.send('reply-complete', clean);
+      if (planReady) {
+        mainWindow?.webContents.send('check-in-action', { actionId: 'plan-ready', label: 'Looks good →' });
+      }
+    } catch (err) {
+      console.error('[Main] Brainstorm error:', err.message);
+      mainWindow?.webContents.send('reply-complete', '');
+    }
+  });
+
+  ipcMain.handle('clear-brainstorm', () => { brainstormHistory = []; });
 
   ipcMain.handle('show-window', () => showWindow());
   ipcMain.handle('hide-window', () => { stopSpeaking(); hideWindow(); });
@@ -1057,6 +1345,53 @@ function setupIPC() {
   ipcMain.handle('check-headphones', async () => {
     return await detectHeadphones();
   });
+
+  ipcMain.handle('trigger-action', async (_, actionId) => {
+    if (actionId === 'fix-code-quality' && pendingCodeFix) {
+      const fix = pendingCodeFix;
+      pendingCodeFix = null;
+      await proposeCodeQualityFix(fix);
+    }
+    if (actionId === 'revert-code-quality' && pendingRevert) {
+      const rv = pendingRevert;
+      pendingRevert = null;
+      execFile('git', ['checkout', '--', ...rv.files], { cwd: rv.repoPath, timeout: 10000 }, (err) => {
+        const msg = err
+          ? `Revert failed: ${err.message.slice(0, 60)}`
+          : `Reverted ${rv.files.length} file${rv.files.length !== 1 ? 's' : ''}.`;
+        mainWindow?.webContents.send('action-result', { message: msg });
+      });
+    }
+    if (actionId === 'plan-ready') {
+      mainWindow?.webContents.send('action-result', { message: 'Noted. Keep building.' });
+    }
+  });
+
+  ipcMain.handle('apply-code-quality-proposal', async (_, { projectId, approvedFiles }) => {
+    const project = db.getProject(projectId);
+    if (!project?.repo_path) return;
+
+    const repoPath = project.repo_path;
+    let totalRemoved = 0;
+    const modifiedPaths = [];
+
+    for (const { relPath, type } of approvedFiles) {
+      const pattern = QUALITY_PATTERNS[type] ?? QUALITY_PATTERNS.todo;
+      const removed = removeMatchingLines(path.join(repoPath, relPath), pattern);
+      if (removed > 0) { totalRemoved += removed; modifiedPaths.push(relPath); }
+    }
+
+    const msg = totalRemoved > 0
+      ? `Removed ${totalRemoved} line${totalRemoved !== 1 ? 's' : ''} across ${modifiedPaths.length} file${modifiedPaths.length !== 1 ? 's' : ''}.`
+      : 'Nothing to clean.';
+    console.log(`[Main] Code quality fix: ${msg}`);
+    mainWindow?.webContents.send('action-result', { message: msg });
+
+    if (modifiedPaths.length > 0) {
+      pendingRevert = { repoPath, files: modifiedPaths };
+      mainWindow?.webContents.send('check-in-action', { actionId: 'revert-code-quality', label: 'Undo →' });
+    }
+  });
 }
 
 // ── App lifecycle ──────────────────────────────────────────────────────────
@@ -1086,6 +1421,8 @@ app.on('before-quit', () => {
   feedFetcher?.stop();
   depMonitor?.stopAll();
   secretScanner?.stopAll();
+  codeQualityScanner?.stopAll();
+  promptWatcher?.stopAll();
   spendTracker?.stop();
   settingsWindow?.close();
   stopSpeaking();

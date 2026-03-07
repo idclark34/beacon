@@ -37,9 +37,26 @@
         <div id="popup-badge"><span id="popup-dot"></span>OC</div>
         <button id="popup-dismiss" title="Dismiss">×</button>
       </div>
+      <div id="alfred-section">
+        <pre id="alfred-art"></pre>
+      </div>
       <div id="popup-message">
         <span id="popup-text"></span><span id="popup-cursor" class="cursor hidden"></span>
       </div>
+      <div id="action-wrap" class="hidden">
+        <button id="action-btn">Fix it →</button>
+      </div>
+
+      <!-- Code quality proposal panel -->
+      <div id="proposal-wrap" class="hidden">
+        <div id="proposal-header">Proposed cleanup</div>
+        <div id="proposal-files"></div>
+        <div id="proposal-btns">
+          <button id="proposal-apply">Apply selected</button>
+          <button id="proposal-skip">Skip all</button>
+        </div>
+      </div>
+
       <div id="chat-area">
         <input id="chat-input" type="text" placeholder="say something…"
                maxlength="300" autocomplete="off" spellcheck="false" />

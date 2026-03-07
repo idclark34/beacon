@@ -2,12 +2,110 @@
 
 const $ = id => document.getElementById(id);
 
+// ── Alfred ASCII character ───────────────────────────────────────────────────
+
+const ALFRED_FRAMES = {
+  normal: [
+    `  .-.
+ (o.o)
+  \\-/
+ /|=|\\
+  | |`,
+    `  .-.
+ (-.-)
+  \\-/
+ /|=|\\
+  | |`,
+  ],
+  roast: [
+    `  .-.
+ (^.-)
+  \\-/
+ /|=|\\
+  | |`,
+    `  .-.
+ (-.^)
+  \\-/
+ /|=|\\
+  | |`,
+  ],
+  alert: [
+    `  /!\\
+ (O.O)
+  \\=/
+ /|!|\\
+  | |`,
+    `  !!!
+ (O.O)
+  \\=/
+ /|!|\\
+  | |`,
+  ],
+  watching: [
+    `  .-.
+ (>.>)
+  \\-/
+ /|=|\\
+  | |`,
+    `  .-.
+ (.>>)
+  \\-/
+ /|=|\\
+  | |`,
+  ],
+  welcome: [
+    `  .-.
+ (^.^)
+  \\u/
+ /|=|\\
+  | |`,
+    `  .-.
+ (^ ^)
+  \\u/
+ /|=|\\
+  | |`,
+  ],
+};
+
+const ALFRED_TIMING = { normal: 700, roast: 480, alert: 280, watching: 580, welcome: 750 };
+
+let alfredInterval = null;
+let alfredFrameIdx = 0;
+
+function startAlfred(mood = 'normal') {
+  stopAlfred();
+  const frames = ALFRED_FRAMES[mood] || ALFRED_FRAMES.normal;
+  const el = $('alfred-art');
+  el.dataset.mood = mood in ALFRED_FRAMES ? mood : 'normal';
+  el.classList.remove('idle');
+  el.style.opacity = '';
+  alfredFrameIdx = 0;
+  el.textContent = frames[0];
+  alfredInterval = setInterval(() => {
+    alfredFrameIdx = (alfredFrameIdx + 1) % frames.length;
+    el.textContent = frames[alfredFrameIdx];
+  }, ALFRED_TIMING[mood] || 600);
+}
+
+function stopAlfred() {
+  if (alfredInterval) { clearInterval(alfredInterval); alfredInterval = null; }
+}
+
+function idleAlfred() {
+  stopAlfred();
+  const el = $('alfred-art');
+  el.textContent = ALFRED_FRAMES.normal[1]; // eyes closed / resting
+  el.classList.add('idle');
+}
+
 // ── Typewriter queue ────────────────────────────────────────────────────────
 
 let typeQueue = [];
 let typeRunning = false;
 let chatEnabled = false;
 let replyPending = false;
+let currentProposal = null;
+let brainstormMode = false;
 const CHARS_PER_FRAME = 40;
 
 function drainTypeQueue() {
@@ -52,12 +150,13 @@ function startCountdown() {
 
 // ── Streaming helpers ───────────────────────────────────────────────────────
 
-function startStream() {
+function startStream(mood = 'normal') {
   $('popup-text').textContent = '';
   typeQueue = [];
   typeRunning = false;
   $('popup-cursor').classList.remove('hidden');
   $('app').classList.add('streaming');
+  startAlfred(mood);
 
   // Reset countdown bar (remove class to kill any running animation)
   const bar = $('countdown-bar');
@@ -78,6 +177,7 @@ function endStream() {
     }
     $('popup-cursor').classList.add('hidden');
     $('app').classList.remove('streaming');
+    idleAlfred();
     showChatInput();
     startCountdown();
   };
@@ -99,6 +199,7 @@ function startReplyStream() {
   typeQueue = []; typeRunning = false;
   $('popup-cursor').classList.remove('hidden');
   $('app').classList.add('streaming');
+  startAlfred('normal');
 }
 
 function endReply() {
@@ -106,10 +207,90 @@ function endReply() {
     if (typeQueue.length > 0 || typeRunning) { requestAnimationFrame(wait); return; }
     $('popup-cursor').classList.add('hidden');
     $('app').classList.remove('streaming');
+    idleAlfred();
     replyPending = false;
-    setTimeout(() => dismissWithAnimation(), 1500);
+    if (brainstormMode) {
+      // Stay open — re-enable chat for next brainstorm exchange
+      chatEnabled = true;
+      const ci = $('chat-input');
+      ci.disabled = false;
+      ci.value = '';
+      ci.focus();
+      $('popup').classList.add('chatting');
+    } else {
+      setTimeout(() => dismissWithAnimation(), 1500);
+    }
   };
   requestAnimationFrame(wait);
+}
+
+// ── Brainstorm mode ─────────────────────────────────────────────────────────
+
+function enterBrainstorm() {
+  brainstormMode = true;
+  $('popup').classList.add('brainstorm');
+  $('chat-input').placeholder = 'thinking with Alfred…';
+}
+
+function exitBrainstorm() {
+  brainstormMode = false;
+  $('popup').classList.remove('brainstorm');
+  $('chat-input').placeholder = 'say something…';
+  window.api.clearBrainstorm();
+  dismissWithAnimation();
+}
+
+// ── Code quality proposal ───────────────────────────────────────────────────
+
+function showProposal(proposal) {
+  currentProposal = proposal;
+  $('alfred-section').classList.add('hidden');
+  $('popup-message').classList.add('hidden');
+  $('action-wrap').classList.add('hidden');
+
+  const filesEl = $('proposal-files');
+  filesEl.innerHTML = '';
+
+  for (const file of proposal.files) {
+    // Show last 2 path segments to keep it readable in the narrow window
+    const shortPath = file.relPath.replace(/^(?:.*\/)?([^/]+\/[^/]+)$/, '$1');
+    const el = document.createElement('div');
+    el.className = 'proposal-file';
+    const removalsHtml = file.removals.slice(0, 4)
+      .map(r => `<div class="proposal-removal">${escapeHtml(r.text)}</div>`)
+      .join('');
+    const moreHtml = file.removals.length > 4
+      ? `<div class="proposal-removal-more">+${file.removals.length - 4} more</div>`
+      : '';
+    el.innerHTML = `
+      <label class="proposal-file-header">
+        <input type="checkbox" class="proposal-checkbox"
+               data-path="${escapeHtml(file.relPath)}" data-type="${escapeHtml(file.type)}" checked />
+        <span class="proposal-file-name" title="${escapeHtml(file.relPath)}">${escapeHtml(shortPath)}</span>
+        <span class="proposal-badge">${file.removals.length}</span>
+      </label>
+      <div class="proposal-removals">${removalsHtml}${moreHtml}</div>`;
+    filesEl.appendChild(el);
+  }
+
+  $('proposal-apply').disabled = false;
+  $('proposal-apply').textContent = 'Apply selected';
+  $('proposal-wrap').classList.remove('hidden');
+}
+
+function hideProposal() {
+  currentProposal = null;
+  $('proposal-wrap').classList.add('hidden');
+  $('alfred-section').classList.remove('hidden');
+  $('popup-message').classList.remove('hidden');
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
@@ -158,16 +339,49 @@ function setupIPCListeners() {
     app.addEventListener('animationend', () => {
       app.classList.remove('entering');
     }, { once: true });
+    // Show a resting Alfred immediately on window show (mood overridden when stream starts)
+    const el = $('alfred-art');
+    if (!el.textContent) {
+      el.textContent = ALFRED_FRAMES.normal[0];
+      el.dataset.mood = 'normal';
+    }
   });
 
-  window.api.onCheckIn(({ type, text }) => {
+  window.api.onCheckInAction(({ actionId, label }) => {
+    const wrap = $('action-wrap');
+    const btn  = $('action-btn');
+    wrap.classList.remove('hidden');
+    btn.textContent = label;
+    btn.disabled = false;
+    btn.dataset.actionId = actionId;
+  });
+
+  window.api.onActionResult(({ message }) => {
+    const btn = $('action-btn');
+    btn.textContent = message;
+    setTimeout(() => $('action-wrap').classList.add('hidden'), 4000);
+  });
+
+  window.api.onCodeQualityProposal((proposal) => {
+    showProposal(proposal);
+  });
+
+  window.api.onCheckIn(({ type, text, mood }) => {
     if (type === 'start') {
       // Reset chat state before each fresh check-in
       chatEnabled = false; replyPending = false;
+      if (brainstormMode) {
+        brainstormMode = false;
+        $('popup').classList.remove('brainstorm');
+        $('chat-input').placeholder = 'say something…';
+        window.api.clearBrainstorm();
+      }
       $('chat-input').value = ''; $('chat-input').disabled = false;
       $('chat-area').classList.remove('visible');
       $('popup').classList.remove('chatting');
-      startStream();
+      $('action-wrap').classList.add('hidden');
+      if (currentProposal) hideProposal();
+      startStream(mood || 'normal');
     } else if (type === 'chunk') {
       appendChunk(text);
     } else if (type === 'complete') {
@@ -185,6 +399,31 @@ function setupIPCListeners() {
 // ── Event Listeners ────────────────────────────────────────────────────────
 
 function setupListeners() {
+  // Action button (code quality fix)
+  $('action-btn').addEventListener('click', () => {
+    const btn = $('action-btn');
+    const actionId = btn.dataset.actionId;
+    btn.disabled = true;
+    btn.textContent = 'Working…';
+    window.api.triggerAction(actionId);
+  });
+
+  // Proposal panel
+  $('proposal-apply').addEventListener('click', async () => {
+    if (!currentProposal) return;
+    const checked = $('proposal-files').querySelectorAll('.proposal-checkbox:checked');
+    const approvedFiles = Array.from(checked).map(cb => ({
+      relPath: cb.dataset.path,
+      type:    cb.dataset.type,
+    }));
+    $('proposal-apply').disabled = true;
+    $('proposal-apply').textContent = 'Applying…';
+    await window.api.applyCodeQualityProposal({ projectId: currentProposal.projectId, approvedFiles });
+    hideProposal();
+  });
+
+  $('proposal-skip').addEventListener('click', () => hideProposal());
+
   // Onboarding submit
   $('ob-submit').addEventListener('click', handleSetup);
   $('ob-path').addEventListener('keydown', e => { if (e.key === 'Enter') handleSetup(); });
@@ -198,9 +437,11 @@ function setupListeners() {
     const ci = $('chat-input');
     if (document.activeElement === ci) {
       if (ci.value.length > 0) { ci.value = ''; }
+      else if (brainstormMode) { exitBrainstorm(); }
       else { ci.blur(); dismissWithAnimation(); }
     } else {
-      dismissWithAnimation();
+      if (brainstormMode) exitBrainstorm();
+      else dismissWithAnimation();
     }
   });
 
@@ -217,11 +458,31 @@ function setupListeners() {
   chatInput.addEventListener('keydown', async (e) => {
     if (e.key !== 'Enter') return;
     const text = chatInput.value.trim();
-    if (!text || replyPending || !chatEnabled) return;
+    if (!text || replyPending) return;
+
+    // /brainstorm <idea> — enter brainstorm mode from the chat input
+    if ((text.startsWith('/brainstorm ') || text.startsWith('/b ')) && chatEnabled) {
+      const idea = text.replace(/^\/(?:brainstorm|b)\s+/, '').trim();
+      if (!idea) return;
+      chatInput.value = '';
+      enterBrainstorm();
+      replyPending = true; chatEnabled = false; chatInput.disabled = true;
+      $('popup').classList.remove('chatting');
+      try { await window.api.sendBrainstorm(idea); }
+      catch { exitBrainstorm(); }
+      return;
+    }
+
+    if (!chatEnabled) return;
     replyPending = true; chatEnabled = false; chatInput.disabled = true;
     $('popup').classList.remove('chatting');
-    try { await window.api.sendMessage(text); }
-    catch { dismissWithAnimation(); }
+    try {
+      if (brainstormMode) await window.api.sendBrainstorm(text);
+      else await window.api.sendMessage(text);
+    } catch {
+      if (brainstormMode) exitBrainstorm();
+      else dismissWithAnimation();
+    }
   });
 }
 

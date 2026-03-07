@@ -124,7 +124,7 @@ class GitMonitor {
 
       // Notify if significant event
       if (commitCount >= SIGNIFICANT_COMMIT_THRESHOLD && this.onSignificantEvent) {
-        this.onSignificantEvent(projectId, commitCount);
+        this.onSignificantEvent(projectId, commitCount, [...changedFiles]);
       }
     } catch (err) {
       console.error(`[GitMonitor] Error scanning repo for project ${projectId}:`, err.message);

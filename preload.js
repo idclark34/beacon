@@ -20,13 +20,15 @@ contextBridge.exposeInMainWorld('api', {
 
   // ── Streaming events from main ────────────────────────────────────────────
   onCheckIn: (cb) => {
-    ipcRenderer.on('check-in-start',    ()         => cb({ type: 'start' }));
+    ipcRenderer.on('check-in-start',    (_, mood)  => cb({ type: 'start', mood: mood || 'normal' }));
     ipcRenderer.on('check-in-chunk',    (_, text)  => cb({ type: 'chunk', text }));
     ipcRenderer.on('check-in-complete', (_, msg)   => cb({ type: 'complete', message: msg }));
   },
 
   // ── User reply (one-exchange chat) ────────────────────────────────────────
-  sendMessage: (text) => ipcRenderer.invoke('send-message', text),
+  sendMessage:     (text) => ipcRenderer.invoke('send-message', text),
+  sendBrainstorm:  (text) => ipcRenderer.invoke('send-brainstorm', text),
+  clearBrainstorm: ()     => ipcRenderer.invoke('clear-brainstorm'),
   onReply: (cb) => {
     ipcRenderer.on('reply-start',    ()        => cb({ type: 'start' }));
     ipcRenderer.on('reply-chunk',    (_, text) => cb({ type: 'chunk', text }));
@@ -44,6 +46,15 @@ contextBridge.exposeInMainWorld('api', {
   setVoiceSettings:  (s)      => ipcRenderer.invoke('set-voice-settings', s),
   checkHeadphones:   ()       => ipcRenderer.invoke('check-headphones'),
   closeSettings:     ()       => ipcRenderer.invoke('close-settings'),
+
+  // ── Action button ─────────────────────────────────────────────────────────
+  triggerAction:    (actionId) => ipcRenderer.invoke('trigger-action', actionId),
+  onCheckInAction:  (cb) => ipcRenderer.on('check-in-action', (_, data) => cb(data)),
+  onActionResult:   (cb) => ipcRenderer.on('action-result',   (_, data) => cb(data)),
+
+  // ── Code quality proposal ─────────────────────────────────────────────────
+  onCodeQualityProposal:    (cb)   => ipcRenderer.on('code-quality-proposal', (_, data) => cb(data)),
+  applyCodeQualityProposal: (data) => ipcRenderer.invoke('apply-code-quality-proposal', data),
 
   // ── Interests & feed sources ──────────────────────────────────────────────
   getInterests: ()         => ipcRenderer.invoke('get-interests'),

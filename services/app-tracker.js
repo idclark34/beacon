@@ -33,6 +33,7 @@ class AppTracker {
     this.claudeProjectPath = null;
     this.claudeProjectName = null;
     this.claudeSessionStart = null;
+    this.onClaudeSessionEnd = null;
   }
 
   start() {
@@ -142,10 +143,19 @@ class AppTracker {
     exec('pgrep -x claude', (err, stdout) => {
       const pid = stdout?.trim().split('\n')[0];
       if (err || !pid) {
-        this.claudeActive = false;
-        this.claudeProjectPath = null;
-        this.claudeProjectName = null;
-        this.claudeSessionStart = null;
+        if (this.claudeActive && this.claudeSessionStart) {
+          const sessionMinutes = Math.round((Date.now() - this.claudeSessionStart) / 60000);
+          const projectName = this.claudeProjectName;
+          const sessionStartMs = this.claudeSessionStart;
+          this.claudeActive = false; this.claudeProjectPath = null;
+          this.claudeProjectName = null; this.claudeSessionStart = null;
+          if (sessionMinutes >= 20 && this.onClaudeSessionEnd) {
+            this.onClaudeSessionEnd(sessionMinutes, projectName, sessionStartMs);
+          }
+        } else {
+          this.claudeActive = false; this.claudeProjectPath = null;
+          this.claudeProjectName = null; this.claudeSessionStart = null;
+        }
         return;
       }
       exec(
