@@ -848,7 +848,7 @@ class AICharacter {
   async generateVibeNarration({ promptText, diff, projectName, onChunk }) {
     const client = this._getClient();
 
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [vibe narration], a non-technical user just sent a prompt to Claude Code and Claude finished working. Your job: tell them in plain English what Claude actually built — not what they asked for, but what was actually done to the code.\n\nRules:\n- Translate technical changes into capabilities: "you can now do X" or "Claude added Y"\n- Be specific about scope: name file counts or which part of the system changed\n- If something important is MISSING (no error handling, no tests, hardcoded secrets, no auth on a route), name it — once, briefly\n- No jargon without immediate plain-English translation\n- 2-3 sentences max. Alfred voice — observational, dry, no cheerleading.\n\nGood examples:\n  "You asked for login. Claude built a full auth system — JWT tokens, a users table, bcrypt passwords, and middleware that protects your routes. No refresh tokens, no rate limiting on failed attempts."\n  "That touched 14 files. Claude added a Stripe payment layer, wired it into checkout, and updated the database schema. The API key is hardcoded — that needs to move to an env variable before this goes anywhere."\n  "One file, one fix. The null check was missing when a user hasn\'t set a profile photo. Small, clean, done."';
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [vibe narration], Ian just finished a Claude Code session. Name what was actually accomplished — one observation, in Alfred\'s voice. Not a summary. Not a list.\n\nRules:\n- 1 sentence. 2 at most.\n- Lead with what landed, not what was done to get there.\n- Warm underneath, but don\'t show it. Let the acknowledgment carry it.\n- If something is obviously missing or risky, name it — but only if it\'s glaring.\n\nGood examples:\n  "That\'s the auth layer in. Took the morning."\n  "One file, one fix. Clean."\n  "The payment flow is wired. It\'s real now."\n  "You got the scanner working. About time."';
 
     const messages = [{
       role: 'user',
@@ -858,7 +858,7 @@ class AICharacter {
     let fullResponse = '';
     const stream = client.messages.stream({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 160,
+      max_tokens: 80,
       system,
       messages,
     });
@@ -949,11 +949,79 @@ class AICharacter {
   }
 
   /**
+   * File saved 8+ times in the idle window — experimenting or stuck?
+   */
+  async generateThrashingObservation({ filePath, saveCount, windowMinutes, onChunk }) {
+    const client = this._getClient();
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [thrashing], Ian has saved the same file many times in a short window. One sentence. Don\'t diagnose. Don\'t suggest. Just name the pattern and leave the question open. "You\'ve rewritten that 8 times in 15 minutes. Experimenting, or stuck?" That energy.';
+    const messages = [{ role: 'user', content: `[thrashing]\nFile: ${filePath}\nSaves: ${saveCount} times in ~${windowMinutes} minutes` }];
+    return this._stream(client, { model: 'claude-haiku-4-5-20251001', max_tokens: 80, system, messages }, onChunk);
+  }
+
+  /**
+   * File or function has grown too large to reason about.
+   */
+  async generateComplexityWarning({ filePath, lineCount, longestFnName, longestFnLines, onChunk }) {
+    const client = this._getClient();
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [complexity], Ian has a file or function that has grown too large. One sentence. Name the thing — file or function — and name the number. Don\'t give advice. "This function is 340 lines. It doesn\'t want to be one function." That energy.';
+    const detail = longestFnName && longestFnLines > 60
+      ? `File: ${filePath} (${lineCount} lines)\nLongest function: ${longestFnName} — ${longestFnLines} lines`
+      : `File: ${filePath} — ${lineCount} lines`;
+    const messages = [{ role: 'user', content: `[complexity]\n${detail}` }];
+    return this._stream(client, { model: 'claude-haiku-4-5-20251001', max_tokens: 80, system, messages }, onChunk);
+  }
+
+  /**
+   * A function or pattern exists in 3+ files — consolidation opportunity.
+   */
+  async generateRefactorOpportunity({ functionName, fileCount, files, onChunk }) {
+    const client = this._getClient();
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [refactor], Ian has the same function or pattern in multiple files. One sentence. Name the function and the count. Don\'t prescribe the fix. "parseUser() exists in 3 files. Make it one place." That energy.';
+    const fileList = files.slice(0, 4).map(f => `  ${f}`).join('\n');
+    const messages = [{ role: 'user', content: `[refactor]\nFunction: ${functionName}\nFound in ${fileCount} files:\n${fileList}` }];
+    return this._stream(client, { model: 'claude-haiku-4-5-20251001', max_tokens: 80, system, messages }, onChunk);
+  }
+
+  /**
+   * File has been edited repeatedly with no corresponding test file movement.
+   */
+  async generateTestGapPerFile({ filePath, saveCount, hasTestFile, onChunk }) {
+    const client = this._getClient();
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [test gap per file], Ian has been editing a code file repeatedly but no tests have moved. One sentence. Name the file. Don\'t lecture. "You\'ve touched auth.js twelve times this session. The tests haven\'t moved." That energy.';
+    const testLine = hasTestFile ? 'Test file exists but untouched this session' : 'No test file found';
+    const messages = [{ role: 'user', content: `[test gap per file]\nFile: ${filePath}\nSaves this session: ${saveCount}\n${testLine}` }];
+    return this._stream(client, { model: 'claude-haiku-4-5-20251001', max_tokens: 80, system, messages }, onChunk);
+  }
+
+  /**
+   * File has a detectable structural smell — long params, deep nesting, else-if chains.
+   */
+  async generateCodeSmellPattern({ filePath, smell, onChunk }) {
+    const client = this._getClient();
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [code smell], Ian\'s code has a structural pattern worth naming. One sentence. Name the file and the specific thing you see. Don\'t explain what it means or how to fix it. "Six parameters means six concerns. That\'s not a function, it\'s a negotiation." That energy.';
+    const messages = [{ role: 'user', content: `[code smell]\nFile: ${filePath}\nPattern: ${smell}` }];
+    return this._stream(client, { model: 'claude-haiku-4-5-20251001', max_tokens: 80, system, messages }, onChunk);
+  }
+
+  /** Shared streaming helper for simple one-shot generators. */
+  async _stream(client, params, onChunk) {
+    let fullResponse = '';
+    const stream = client.messages.stream(params);
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
    * Generate a spontaneous check-in message (character initiates).
    * Offers a read_file tool so the character can peek at hot files.
    * Accepts an optional imageBase64 (JPEG) captured from the user's webcam.
    */
-  async generateCheckIn({ projectId, imageBase64 = null, onChunk }) {
+  async generateCheckIn({ projectId, repoPath = null, imageBase64 = null, onChunk }) {
     const client = this._getClient();
     const summary = projectId ? this.db.getActivitySummary(projectId, 24) : null;
     const hotFiles = projectId ? this.db.getHotFiles(projectId, 8, 3) : [];
@@ -1005,6 +1073,26 @@ class AICharacter {
       if (weekSummary.topFiles.length > 0) {
         const list = weekSummary.topFiles.map(f => f.filePath).join(', ');
         contextLines.push(`Files that keep coming up this week: ${list}`);
+      }
+    }
+
+    // Recent git log — project arc across all time, not just last 24h
+    if (repoPath) {
+      try {
+        const log = execSync('git log --oneline -14', { cwd: repoPath, timeout: 5000 }).toString().trim();
+        if (log) contextLines.push(`Recent commit history:\n${log.split('\n').map(l => `  ${l}`).join('\n')}`);
+      } catch {}
+    }
+
+    // Alfred's own recent observations — so he has memory and doesn't repeat himself
+    if (projectId) {
+      const history = this.db.getConversations(projectId, 20);
+      const alfredLines = history
+        .filter(c => c.sender === 'character')
+        .slice(-4)
+        .map(c => `  "${c.message}"`);
+      if (alfredLines.length > 0) {
+        contextLines.push(`What you've said recently (don't repeat these):\n${alfredLines.join('\n')}`);
       }
     }
 

@@ -204,10 +204,32 @@ async function initServices() {
   const fs = require('fs');
   fileWatcher.onHotFile = async (projectId, relativePath, absolutePath, saveCount) => {
     if (projectId !== activeProjectId || !mainWindow) return;
-    // 2-hour cooldown per file
     const last = recentlyObservedFiles.get(relativePath);
     if (last && Date.now() - last < 2 * 60 * 60 * 1000) return;
-    // Read content, cap at 120 lines
+    recentlyObservedFiles.set(relativePath, Date.now());
+
+    // Route to the most interesting observation available
+    const observation = analyzeFileForObservation(absolutePath, relativePath, saveCount);
+
+    if (observation?.type === 'thrashing') {
+      await triggerThrashingObservation(relativePath, saveCount);
+      return;
+    }
+    if (observation?.type === 'complexity') {
+      await triggerComplexityWarning(relativePath, observation);
+      return;
+    }
+    if (observation?.type === 'code_smell') {
+      await triggerCodeSmellPattern(relativePath, observation.smell);
+      return;
+    }
+    if (observation?.type === 'test_gap') {
+      const project = db.getProject(activeProjectId);
+      await triggerTestGapPerFile(relativePath, saveCount, observation.hasTestFile, project?.repo_path);
+      return;
+    }
+
+    // Fallback: general file observation (reads content)
     let content;
     try {
       const raw = fs.readFileSync(absolutePath, 'utf8');
@@ -215,7 +237,6 @@ async function initServices() {
       content = lines.slice(0, 120).join('\n');
       if (lines.length > 120) content += `\n... (${lines.length - 120} more lines)`;
     } catch { return; }
-    recentlyObservedFiles.set(relativePath, Date.now());
     await triggerFileObservation(relativePath, content, saveCount);
   };
 
@@ -223,6 +244,18 @@ async function initServices() {
     console.log(`[Main] ${commitCount} new commits on project ${projectId}`);
     if (projectId === activeProjectId) {
       await maybeShowTestGap(projectId, changedFiles);
+      const project = db.getProject(projectId);
+      if (project?.repo_path) {
+        const last = db.getState('last_refactor_alert');
+        if (!last || Date.now() - new Date(last) > 24 * 60 * 60 * 1000) {
+          const dupe = await findRefactorOpportunity(project.repo_path, changedFiles);
+          if (dupe) {
+            db.setState('last_refactor_alert', new Date().toISOString());
+            await triggerRefactorOpportunity(dupe);
+            return;
+          }
+        }
+      }
       scheduleCheckIn(1500);
     }
   };
@@ -817,8 +850,10 @@ async function triggerCheckIn() {
   const emit = (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk);
 
   try {
+    const project = db.getProject(activeProjectId);
     const message = await aiCharacter.generateCheckIn({
       projectId: activeProjectId,
+      repoPath: project?.repo_path || null,
       imageBase64,
       onChunk: emit,
     });
@@ -967,6 +1002,215 @@ async function triggerQuote(quote) {
     mainWindow?.webContents.send('check-in-complete', message);
   } catch (err) {
     console.error('[Main] Quote error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
+// ── File analysis helpers ──────────────────────────────────────────────────
+
+const CODE_EXTS = new Set(['.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs', '.py', '.rb', '.go', '.rs']);
+const JS_EXTS   = new Set(['.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs']);
+
+function analyzeFileForObservation(absolutePath, relativePath, saveCount) {
+  const ext = path.extname(absolutePath).toLowerCase();
+  if (!CODE_EXTS.has(ext)) return null;
+
+  // Thrashing: too many saves in the 2-min hot-file window
+  if (saveCount >= 8) return { type: 'thrashing' };
+
+  let lines;
+  try { lines = fs.readFileSync(absolutePath, 'utf8').split('\n'); }
+  catch { return null; }
+
+  const lineCount = lines.length;
+
+  // Complexity: large file or very long function
+  if (JS_EXTS.has(ext)) {
+    const { longestFnLines, longestFnName } = analyzeLongestFunction(lines);
+    if (lineCount > 300 || longestFnLines > 80) {
+      return { type: 'complexity', lineCount, longestFnLines, longestFnName };
+    }
+
+    // Code smell: detectable structural problems
+    const smell = detectCodeSmell(lines);
+    if (smell) return { type: 'code_smell', smell };
+  }
+
+  // Test gap: no test file found for a code file saved many times
+  if (saveCount >= 6) {
+    const hasTestFile = findTestFile(absolutePath);
+    if (!hasTestFile) return { type: 'test_gap', hasTestFile: false };
+  }
+
+  return null;
+}
+
+function analyzeLongestFunction(lines) {
+  const FN_RE = /(?:(?:async\s+)?function\s+(\w+)\s*\(|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>|(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?function)/;
+  let maxLines = 0, maxName = null, fnStart = -1, fnName = '', depth = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (fnStart === -1) {
+      const m = FN_RE.exec(lines[i]);
+      if (m) { fnName = m[1] || m[2] || m[3] || 'anonymous'; fnStart = i; depth = 0; }
+    }
+    if (fnStart !== -1) {
+      depth += (lines[i].match(/\{/g) || []).length - (lines[i].match(/\}/g) || []).length;
+      if (depth <= 0 && i > fnStart) {
+        const len = i - fnStart;
+        if (len > maxLines) { maxLines = len; maxName = fnName; }
+        fnStart = -1;
+      }
+    }
+  }
+  return { longestFnLines: maxLines, longestFnName: maxName };
+}
+
+function detectCodeSmell(lines) {
+  const src = lines.join('\n');
+
+  // Function with 6+ parameters
+  const paramMatch = src.match(/(?:async\s+)?function\s+(\w+)\s*\(([^)]{70,})\)/);
+  if (paramMatch) {
+    const count = (paramMatch[2].match(/,/g) || []).length + 1;
+    if (count >= 6) return `${paramMatch[1]} takes ${count} parameters`;
+  }
+
+  // 4+ branch else-if chain
+  const elseIfs = (src.match(/\belse\s+if\s*\(/g) || []).length;
+  if (elseIfs >= 4) return `${elseIfs + 1}-branch if/else chain`;
+
+  // Deep callback nesting (4+ levels of arrow functions)
+  const maxIndent = lines.reduce((max, l) => {
+    const indent = (l.match(/^(\s+)/) || ['', ''])[1].length;
+    return l.includes('=>') && indent > max ? indent : max;
+  }, 0);
+  if (maxIndent >= 16) return `callback nesting ${Math.floor(maxIndent / 4)} levels deep`;
+
+  return null;
+}
+
+function findTestFile(absolutePath) {
+  const dir  = path.dirname(absolutePath);
+  const base = path.basename(absolutePath, path.extname(absolutePath));
+  const ext  = path.extname(absolutePath);
+  return [
+    path.join(dir, `${base}.test${ext}`),
+    path.join(dir, `${base}.spec${ext}`),
+    path.join(dir, '__tests__', `${base}${ext}`),
+  ].some(p => { try { return fs.existsSync(p); } catch { return false; } });
+}
+
+async function findRefactorOpportunity(repoPath, changedFiles) {
+  const jsFiles = changedFiles.filter(f => JS_EXTS.has(path.extname(f).toLowerCase()) && !TEST_FILE_RE.test(f));
+  for (const relPath of jsFiles.slice(0, 4)) {
+    let src;
+    try { src = fs.readFileSync(path.join(repoPath, relPath), 'utf8'); } catch { continue; }
+
+    const names = [...src.matchAll(/(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(/g)]
+      .map(m => m[1]).filter(n => n.length >= 4);
+
+    for (const name of names.slice(0, 6)) {
+      const files = await new Promise(resolve => {
+        execFile('git', ['grep', '-l', `\\b${name}\\b`, '--', ...['*.js','*.ts','*.jsx','*.tsx']],
+          { cwd: repoPath, timeout: 5000 },
+          (err, stdout) => resolve((stdout || '').trim().split('\n').filter(Boolean)));
+      });
+      const nonTest = files.filter(f => !TEST_FILE_RE.test(f));
+      if (nonTest.length >= 3) return { functionName: name, fileCount: nonTest.length, files: nonTest };
+    }
+  }
+  return null;
+}
+
+// ── Code observation trigger functions ─────────────────────────────────────
+
+async function triggerThrashingObservation(filePath, saveCount) {
+  if (!mainWindow || !activeProjectId) return;
+  showWindow();
+  mainWindow.webContents.send('check-in-start', 'watching');
+  try {
+    const message = await aiCharacter.generateThrashingObservation({
+      filePath, saveCount, windowMinutes: 2,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+    if (await shouldSpeak()) speak(message);
+  } catch (err) {
+    console.error('[Main] Thrashing observation error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
+async function triggerComplexityWarning(filePath, { lineCount, longestFnLines, longestFnName }) {
+  if (!mainWindow || !activeProjectId) return;
+  showWindow();
+  mainWindow.webContents.send('check-in-start', 'watching');
+  try {
+    const message = await aiCharacter.generateComplexityWarning({
+      filePath, lineCount, longestFnLines, longestFnName,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+    if (await shouldSpeak()) speak(message);
+  } catch (err) {
+    console.error('[Main] Complexity warning error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
+async function triggerRefactorOpportunity({ functionName, fileCount, files }) {
+  if (!mainWindow || !activeProjectId) return;
+  showWindow();
+  mainWindow.webContents.send('check-in-start', 'watching');
+  try {
+    const message = await aiCharacter.generateRefactorOpportunity({
+      functionName, fileCount, files,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+    if (await shouldSpeak()) speak(message);
+  } catch (err) {
+    console.error('[Main] Refactor opportunity error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
+async function triggerTestGapPerFile(filePath, saveCount, hasTestFile) {
+  if (!mainWindow || !activeProjectId) return;
+  showWindow();
+  mainWindow.webContents.send('check-in-start', 'watching');
+  try {
+    const message = await aiCharacter.generateTestGapPerFile({
+      filePath, saveCount, hasTestFile,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+    if (await shouldSpeak()) speak(message);
+  } catch (err) {
+    console.error('[Main] Test gap per-file error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+}
+
+async function triggerCodeSmellPattern(filePath, smell) {
+  if (!mainWindow || !activeProjectId) return;
+  showWindow();
+  mainWindow.webContents.send('check-in-start', 'watching');
+  try {
+    const message = await aiCharacter.generateCodeSmellPattern({
+      filePath, smell,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+    if (await shouldSpeak()) speak(message);
+  } catch (err) {
+    console.error('[Main] Code smell error:', err.message);
     mainWindow?.webContents.send('check-in-complete', '');
   }
 }
