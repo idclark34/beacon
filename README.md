@@ -19,6 +19,7 @@ Alfred fires on his own schedule. He doesn't wait to be asked. The check-in queu
 | **Inactivity return** | Away from coding for 3+ days | Once per absence |
 | **Weekly recap** | 7 days since last recap | 7 days |
 | **Browser distraction** | 20+ min on YouTube, Reddit, Twitter, LinkedIn | 2 hours |
+| **Claude Code session** | Claude Code running for 30+ min | Once per session |
 | **Commit roast** | Vague commit message (`fix`, `wip`, `misc`, etc.) | 4 hours |
 | **Branch roast** | Terrible branch name (`final-final`, `wip`, `temp`, etc.) | 24 hours |
 | **Distraction return** | Back in editor after 60+ min away | 2 hours |
@@ -39,6 +40,7 @@ Alfred's context at check-in time includes:
 
 - **Current app** — which application is focused right now
 - **Current browser tab** — the active Safari URL, including domain and time spent
+- **Claude Code session** — whether Claude Code is running, on which project, and for how long
 - **App session summary** — time in each app this session
 - **Commit activity** — commit count, file paths touched, commit messages (last 24h)
 - **Active coding time** — hours tracked via file-save activity
@@ -61,6 +63,7 @@ Alfred is patrician, dry, and warm underneath — but he doesn't show it often. 
 "You've been in that browser for over an hour. Something stuck, or just avoiding it?"
 "You pushed 'fix stuff.' That's not a commit message, Ian. That's a confession."
 "You're on 'final-final-v2'. I've seen this branch before. Different repo, same energy."
+"Three hundred lines on Alfred himself and you just shipped it. Browser's open on the commit you built."
 ```
 
 He never gives step-by-step instructions. He never writes code. He never says "Great job!" He names what he sees and lets the implication land.
@@ -180,7 +183,7 @@ renderer/
 services/
   database.js             — SQLite via better-sqlite3
   ai-character.js         — Anthropic streaming, all Alfred generators, tool-call loop
-  app-tracker.js          — Active app polling, Safari URL tracking, distraction domain timing
+  app-tracker.js          — Active app polling, Safari URL tracking, distraction domain timing, Claude Code detection
   git-monitor.js          — simple-git polling every 5 min, commit metadata
   file-watcher.js         — chokidar, tracks file saves by extension
   activity-tracker.js     — 5-min active window polling
@@ -228,6 +231,12 @@ Alfred polls Safari's active tab every 15 seconds via AppleScript. Distraction d
 - `linkedin.com`
 
 After 20 continuous minutes on any of these, Alfred fires a single-sentence observation. The last known domain persists for 5 minutes after Safari loses focus, so tray clicks don't wipe the context before the check-in fires.
+
+---
+
+## Claude Code detection
+
+Alfred polls for a running `claude` process every 15 seconds and reads its working directory via `lsof`. When a Claude Code session is active, Alfred includes the project name and session duration in every check-in context. After 30 minutes in a session, Alfred fires a one-time comment — once per session launch, not once per 30 minutes.
 
 ---
 
