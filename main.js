@@ -255,6 +255,7 @@ function startCheckInTimer() {
     if (await maybeShowInactivityReturn()) return;    // highest priority — 3-day absence
     if (await maybeShowWeeklyRecap()) return;
     if (await maybeShowBrowserDistraction()) return;  // 20min on distraction site
+    if (await maybeShowClaudeSessionComment()) return; // claude code session running
     if (await maybeShowCommitRoast()) return;         // vague commit message
     if (await maybeShowBranchRoast()) return;         // terrible branch name
     if (await maybeShowDistractionReturn()) return;   // 1hr distraction, 35% silent
@@ -457,6 +458,33 @@ async function maybeShowCommitRoast() {
     mainWindow?.webContents.send('check-in-complete', message);
   } catch (err) {
     console.error('[Main] Commit roast error:', err.message);
+    mainWindow?.webContents.send('check-in-complete', '');
+  }
+  return true;
+}
+
+async function maybeShowClaudeSessionComment() {
+  if (!appTracker || !activeProjectId) return false;
+  const session = appTracker.getClaudeSession();
+  if (!session || session.minutes < 30) return false;
+
+  // Once per session start — track by session start timestamp
+  const sessionKey = String(appTracker.claudeSessionStart);
+  if (db.getState('last_claude_session_key') === sessionKey) return false;
+
+  db.setState('last_claude_session_key', sessionKey);
+  showWindow();
+  mainWindow.webContents.send('check-in-start');
+  try {
+    const message = await aiCharacter.generateClaudeSessionComment({
+      projectName: session.projectName || 'unknown',
+      minutes: session.minutes,
+      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+    });
+    db.saveConversation(activeProjectId, message, 'character');
+    mainWindow?.webContents.send('check-in-complete', message);
+  } catch (err) {
+    console.error('[Main] Claude session comment error:', err.message);
     mainWindow?.webContents.send('check-in-complete', '');
   }
   return true;
@@ -681,18 +709,27 @@ async function triggerCheckIn() {
   const withinWindow = camAfterHour === null || currentHour >= camAfterHour;
   const imageBase64 = (camEnabled && withinWindow) ? await captureFrame().catch(() => null) : null;
 
+  const emit = (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk);
+
   try {
     const message = await aiCharacter.generateCheckIn({
       projectId: activeProjectId,
       imageBase64,
-      onChunk: (chunk) => mainWindow?.webContents.send('check-in-chunk', chunk),
+      onChunk: emit,
     });
-    db.saveConversation(activeProjectId, message, 'character');
-    mainWindow?.webContents.send('check-in-complete', message);
-    if (await shouldSpeak()) speak(message);
+    if (!message) {
+      console.warn('[Main] generateCheckIn returned empty — using fallback');
+      emit("I'm here, Ian. Something got in the way of the words.");
+    }
+    const final = message || "I'm here, Ian. Something got in the way of the words.";
+    db.saveConversation(activeProjectId, final, 'character');
+    mainWindow?.webContents.send('check-in-complete', final);
+    if (await shouldSpeak()) speak(final);
   } catch (err) {
-    console.error('[Main] Check-in error:', err.message);
-    mainWindow?.webContents.send('check-in-complete', "Hey — how's it going?");
+    console.error('[Main] Check-in error:', err.message, err.stack);
+    const fallback = "I seem to have lost my train of thought. I'll try again shortly.";
+    emit(fallback);
+    mainWindow?.webContents.send('check-in-complete', fallback);
   }
 }
 

@@ -122,6 +122,10 @@ class AICharacter {
         const minutes = this.appTracker.getDomainMinutes(domain);
         lines.push(`Current browser tab: ${domain}${minutes > 0 ? ` (${minutes} min this session)` : ''}`);
       }
+      const claude = this.appTracker.getClaudeSession();
+      if (claude) {
+        lines.push(`Claude Code session active: ${claude.projectName || claude.projectPath || 'unknown project'} (${claude.minutes} min)`);
+      }
     }
     return lines.length > 0 ? `\n\nCurrent context:\n${lines.join('\n')}` : '';
   }
@@ -154,7 +158,7 @@ class AICharacter {
       let fullResponse = '';
       const stream = client.messages.stream({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 256,
+        max_tokens: 180,
         system,
         messages,
       });
@@ -180,7 +184,7 @@ class AICharacter {
       rounds++;
       const response = await client.messages.create({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 300,
+        max_tokens: 180,
         system,
         tools,
         messages,
@@ -207,7 +211,7 @@ class AICharacter {
     let fullResponse = '';
     const stream = client.messages.stream({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 256,
+      max_tokens: 180,
       system,
       messages,
     });
@@ -280,7 +284,7 @@ class AICharacter {
     let fullResponse = '';
     const stream = client.messages.stream({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 180,
+      max_tokens: 120,
       system: CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[weekly recap]", give a brief 2-3 sentence reflection on the past week based on the data. What was the center of gravity? Was it a heavy week or light? Were they consistent or did they disappear for a few days? Speak like you were watching the whole time. Past tense. No bullet points. Casual, not formal.',
       messages,
     });
@@ -580,6 +584,34 @@ class AICharacter {
   }
 
   /**
+   * Fires when Claude Code has been running for 30+ min on a project.
+   */
+  async generateClaudeSessionComment({ projectName, minutes, onChunk }) {
+    const client = this._getClient();
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [claude session], Ian has had a Claude Code session open for a while. One or two sentences. You find it mildly interesting that he\'s using an AI to build an AI observer. Don\'t make it a whole thing — just let the irony land once, lightly. Be Alfred about it.';
+    const messages = [{
+      role: 'user',
+      content: `[claude session]\nProject: ${projectName}\nSession length: ${minutes} minutes`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 100,
+      system,
+      messages,
+    });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
    * Fires when the current branch name is vague, lazy, or desperate.
    */
   async generateBranchRoast({ branch, onChunk }) {
@@ -796,7 +828,7 @@ class AICharacter {
     let fullResponse = '';
     const stream = client.messages.stream({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 180,
+      max_tokens: 120,
       system,
       messages,
     });
@@ -851,8 +883,6 @@ class AICharacter {
     const summary = projectId ? this.db.getActivitySummary(projectId, 24) : null;
     const hotFiles = projectId ? this.db.getHotFiles(projectId, 8, 3) : [];
     const weekSummary = projectId ? this.db.getMultiDaySummary(projectId, 7) : null;
-    const project = projectId ? this.db.getProject(projectId) : null;
-    const repoPath = project?.repo_path || null;
 
     const contextLines = [];
     if (summary?.project) contextLines.push(`Project: ${summary.project}`);
@@ -869,6 +899,10 @@ class AICharacter {
       if (domain) {
         const minutes = this.appTracker.getDomainMinutes(domain);
         contextLines.push(`Current browser tab: ${domain}${minutes > 0 ? ` (${minutes} min this session)` : ''}`);
+      }
+      const claude = this.appTracker.getClaudeSession();
+      if (claude) {
+        contextLines.push(`Claude Code session active: ${claude.projectName || claude.projectPath || 'unknown project'} (${claude.minutes} min)`);
       }
     }
 
@@ -913,7 +947,7 @@ class AICharacter {
       ? '\n\nYou have a visual of the user and their environment right now. Reference what you observe — but only to reflect their dedication back at them. A cluttered desk is evidence of focus. Dim lighting is atmosphere. Cold coffee is commitment. The hour visible in the scene, the posture, the surroundings — read them the way Alfred reads the Batcave after a long night. With quiet, knowing respect. Never name anything as a problem. Only as evidence. Weave one brief observation naturally into your message — never make it the focus.'
       : '';
 
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[checking in]", say one thing -- an observation or a question -- based on the context provided. React specifically to what you see. "Currently in" tells you what app is focused right now -- use it. "Current browser tab" tells you exactly what site Ian is on -- if it\'s YouTube, Reddit, Twitter, LinkedIn, or anything that isn\'t work, name it directly. "Past week" and "Files that keep coming up" give you longitudinal pattern -- use them to make observations that span days, not just today. If there were commits, use get_git_diff to see what actually changed -- this is the most direct signal. Use read_file when a frequently-edited file would add more color. Skip tools if the context already tells the story.' + visualPrompt;
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[checking in]", pick ONE signal from the context — the most interesting one — and say something about it. One or two sentences max. Do not list. Do not summarize. Do not mention multiple things. Prioritize in this order: (1) something surprising or contradictory; (2) a pattern that spans multiple days; (3) what\'s happening right now. The context is for you to read, not to recite back.' + visualPrompt;
 
     const textContent = `${trigger}${contextStr}`;
     const userContent = imageBase64
@@ -923,59 +957,12 @@ class AICharacter {
         ]
       : textContent;
 
-    const tools = [
-      this._intelTool(),
-      ...(repoPath ? [this._diffTool(), this._peekTool()] : []),
-    ];
-
-    // Tool-call loop: handle up to 3 rounds of tool use, then stream final text
-    const messages = [{ role: 'user', content: userContent }];
-    let rounds = 0;
-
-    while (rounds < 3) {
-      rounds++;
-      const response = await client.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 300,
-        system,
-        tools,
-        messages,
-      });
-
-      if (response.stop_reason !== 'tool_use') {
-        // Got text — emit and return (no streaming since we're done)
-        const text = response.content.find(b => b.type === 'text')?.text?.trim() || '';
-        if (onChunk && text) onChunk(text);
-        return text;
-      }
-
-      // Execute all tool calls in this round
-      const toolResults = response.content
-        .filter(b => b.type === 'tool_use')
-        .map(b => {
-          if (b.name === 'get_recent_intel') {
-            console.log('[AICharacter] Pulling intel feed');
-            return { type: 'tool_result', tool_use_id: b.id, content: this._executeIntel() };
-          }
-          if (b.name === 'get_git_diff') {
-            console.log(`[AICharacter] Reading git diff (${b.input.commits_back || 3} commits back)`);
-            return { type: 'tool_result', tool_use_id: b.id, content: this._executeDiff(repoPath, b.input.commits_back) };
-          }
-          console.log(`[AICharacter] Peeking at: ${b.input.path}`);
-          return { type: 'tool_result', tool_use_id: b.id, content: this._executePeek(b.input.path, repoPath) };
-        });
-
-      messages.push({ role: 'assistant', content: response.content });
-      messages.push({ role: 'user', content: toolResults });
-    }
-
-    // Exhausted tool rounds without text — stream a final answer without tools
     let fullResponse = '';
     const stream = client.messages.stream({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 150,
+      max_tokens: 120,
       system,
-      messages,
+      messages: [{ role: 'user', content: userContent }],
     });
 
     for await (const event of stream) {
