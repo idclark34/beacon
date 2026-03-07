@@ -1,14 +1,17 @@
 'use strict';
 
+const path     = require('path');
+const fs       = require('fs');
+const chokidar = require('chokidar');
 const { simpleGit } = require('simple-git');
 
-const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes (fallback)
 const SIGNIFICANT_COMMIT_THRESHOLD = 1;
 
 class GitMonitor {
   constructor(database) {
     this.db = database;
-    this.watchers = new Map(); // projectId → { git, lastChecked, intervalId }
+    this.watchers  = new Map(); // projectId → { git, lastChecked, intervalId, fsWatcher }
     this.onSignificantEvent = null; // callback(projectId, commitCount)
   }
 
@@ -34,7 +37,20 @@ class GitMonitor {
       watcher.lastChecked = new Date();
     }, POLL_INTERVAL_MS);
 
-    this.watchers.set(projectId, { git, lastChecked, intervalId });
+    // Watch COMMIT_EDITMSG for instant detection on every commit/push
+    let fsWatcher = null;
+    const commitMsgPath = path.join(repoPath, '.git', 'COMMIT_EDITMSG');
+    if (fs.existsSync(path.dirname(commitMsgPath))) {
+      fsWatcher = chokidar.watch(commitMsgPath, { ignoreInitial: true, awaitWriteFinish: { stabilityThreshold: 300 } });
+      fsWatcher.on('change', () => {
+        const w = this.watchers.get(projectId);
+        if (!w) return;
+        this._scanRepo(projectId, w.git, w.lastChecked);
+        w.lastChecked = new Date();
+      });
+    }
+
+    this.watchers.set(projectId, { git, lastChecked, intervalId, fsWatcher });
     console.log(`[GitMonitor] Watching repo for project ${projectId}: ${repoPath}`);
   }
 
@@ -42,6 +58,7 @@ class GitMonitor {
     const watcher = this.watchers.get(projectId);
     if (watcher) {
       clearInterval(watcher.intervalId);
+      watcher.fsWatcher?.close();
       this.watchers.delete(projectId);
     }
   }
