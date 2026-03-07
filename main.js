@@ -4,6 +4,9 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const { execFile }  = require('child_process');
+const https         = require('https');
+const os            = require('os');
+const fs            = require('fs');
 const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage } = require('electron');
 
 const DB              = require('./services/database');
@@ -631,32 +634,86 @@ function captureFrame() {
 
 // ── Voice / TTS ─────────────────────────────────────────────────────────────
 
-let currentSpeech = null;
+const ELEVENLABS_VOICE_ID = 'JBFqnCBsd6RMkjVDRZzb'; // George
+const TMP_SPEECH_FILE     = path.join(os.tmpdir(), 'alfred-speech.mp3');
 
-function speak(text) {
-  if (!text) return;
-  if (currentSpeech) {
-    currentSpeech.kill('SIGTERM');
-    currentSpeech = null;
-  }
-  // Strip markdown formatting before handing to say
-  const clean = text
+let currentSpeech  = null; // afplay / say process
+let currentRequest = null; // in-flight ElevenLabs https request
+
+function _stripMarkdown(text) {
+  return text
     .replace(/\*\*(.*?)\*\*/g, '$1')
     .replace(/\*(.*?)\*/g, '$1')
     .replace(/`[^`]+`/g, '')
     .replace(/[_~]/g, '')
     .trim();
-  if (!clean) return;
+}
+
+function _speakFallback(clean) {
   currentSpeech = execFile('say', ['-v', 'Daniel', '-r', '165', clean], () => {
     currentSpeech = null;
   });
 }
 
-function stopSpeaking() {
-  if (currentSpeech) {
-    currentSpeech.kill('SIGTERM');
-    currentSpeech = null;
+function speak(text) {
+  if (!text) return;
+  stopSpeaking();
+  const clean = _stripMarkdown(text);
+  if (!clean) return;
+
+  if (!process.env.ELEVENLABS_API_KEY) {
+    _speakFallback(clean);
+    return;
   }
+
+  const body = JSON.stringify({
+    text: clean,
+    model_id: 'eleven_turbo_v2_5',
+    voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+  });
+
+  const req = https.request({
+    hostname: 'api.elevenlabs.io',
+    path:     `/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
+    method:   'POST',
+    headers: {
+      'xi-api-key':     process.env.ELEVENLABS_API_KEY,
+      'Content-Type':   'application/json',
+      'Content-Length': Buffer.byteLength(body),
+    },
+  }, (res) => {
+    currentRequest = null;
+    if (res.statusCode !== 200) {
+      let errBody = '';
+      res.on('data', d => { errBody += d; });
+      res.on('end', () => console.error(`[Voice] ElevenLabs ${res.statusCode}:`, errBody));
+      _speakFallback(clean);
+      return;
+    }
+    const file = fs.createWriteStream(TMP_SPEECH_FILE);
+    res.pipe(file);
+    file.on('finish', () => {
+      file.close();
+      currentSpeech = execFile('afplay', [TMP_SPEECH_FILE], () => {
+        currentSpeech = null;
+      });
+    });
+  });
+
+  req.on('error', (err) => {
+    console.error('[Voice] ElevenLabs error:', err.message, '— falling back to say');
+    currentRequest = null;
+    _speakFallback(clean);
+  });
+
+  req.write(body);
+  req.end();
+  currentRequest = req;
+}
+
+function stopSpeaking() {
+  if (currentRequest) { currentRequest.destroy(); currentRequest = null; }
+  if (currentSpeech)  { currentSpeech.kill('SIGTERM'); currentSpeech = null; }
 }
 
 /**
