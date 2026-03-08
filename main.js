@@ -300,6 +300,7 @@ function _stripMarkdown(text) {
 function _speakFallback(clean) {
   currentSpeech = execFile('say', ['-v', 'Daniel', '-r', '165', clean], () => {
     currentSpeech = null;
+    mainWindow?.webContents.send('speaking-end');
   });
 }
 
@@ -308,6 +309,8 @@ function speak(text) {
   stopSpeaking();
   const clean = _stripMarkdown(text);
   if (!clean) return;
+
+  mainWindow?.webContents.send('speaking-start');
 
   if (!process.env.ELEVENLABS_API_KEY) {
     _speakFallback(clean);
@@ -344,6 +347,7 @@ function speak(text) {
       file.close();
       currentSpeech = execFile('afplay', [TMP_SPEECH_FILE], () => {
         currentSpeech = null;
+        mainWindow?.webContents.send('speaking-end');
       });
     });
   });
@@ -360,8 +364,10 @@ function speak(text) {
 }
 
 function stopSpeaking() {
+  const wasSpeaking = !!(currentRequest || currentSpeech);
   if (currentRequest) { currentRequest.destroy(); currentRequest = null; }
   if (currentSpeech)  { currentSpeech.kill('SIGTERM'); currentSpeech = null; }
+  if (wasSpeaking) mainWindow?.webContents.send('speaking-end');
 }
 
 /**

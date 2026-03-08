@@ -35,6 +35,10 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('reply-complete', (_, msg)  => cb({ type: 'complete', message: msg }));
   },
 
+  // ── Voice playback ────────────────────────────────────────────────────────
+  onSpeakingStart: (cb) => ipcRenderer.on('speaking-start', () => cb()),
+  onSpeakingEnd:   (cb) => ipcRenderer.on('speaking-end',   () => cb()),
+
   // ── Camera frame exchange ─────────────────────────────────────────────────
   onCaptureFrame: (cb) => ipcRenderer.on('capture-frame', () => cb()),
   sendFrame:      (b64) => ipcRenderer.send('frame-captured', b64),

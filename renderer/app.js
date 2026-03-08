@@ -106,6 +106,8 @@ let chatEnabled = false;
 let replyPending = false;
 let currentProposal = null;
 let brainstormMode = false;
+let alfredSpeaking = false;
+let countdownPending = false;
 const CHARS_PER_FRAME = 40;
 
 function drainTypeQueue() {
@@ -140,6 +142,12 @@ function dismissWithAnimation() {
 }
 
 function startCountdown() {
+  // If Alfred is still speaking, defer until speaking-end fires
+  if (alfredSpeaking) {
+    countdownPending = true;
+    return;
+  }
+  countdownPending = false;
   const bar = $('countdown-bar');
   void bar.offsetWidth; // force reflow so animation restarts cleanly
   bar.classList.add('draining');
@@ -349,6 +357,17 @@ function setupIPCListeners() {
       el.textContent = ALFRED_FRAMES.normal[0];
       el.dataset.mood = 'normal';
     }
+  });
+
+  window.api.onSpeakingStart(() => {
+    alfredSpeaking = true;
+    // Cancel any running countdown so it doesn't close while Alfred is mid-sentence
+    $('countdown-bar').classList.remove('draining');
+  });
+
+  window.api.onSpeakingEnd(() => {
+    alfredSpeaking = false;
+    if (countdownPending) startCountdown();
   });
 
   window.api.onCheckInAction(({ actionId, label }) => {

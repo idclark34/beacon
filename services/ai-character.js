@@ -124,6 +124,7 @@ const CODING_APPS = new Set([
   'Xcode', 'Sublime Text', 'Nova', 'TextMate', 'MacVim', 'Emacs',
   'Terminal', 'iTerm2', 'iTerm', 'Warp', 'Hyper', 'Alacritty', 'kitty',
   'Tower', 'Fork', 'Sourcetree', 'GitKraken',
+  'Claude',  // Claude Code Electron app — legitimate dev environment
 ]);
 
 const QUOTES = [
