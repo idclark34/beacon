@@ -1465,6 +1465,33 @@ class AICharacter {
     }
     return fullResponse.trim();
   }
+
+  /**
+   * Fires when Ian has been listening to music on YouTube/YouTube Music for a while.
+   */
+  async generateMusicComment({ title, source, onChunk }) {
+    const client = this._getClient();
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [music], Ian is listening to something while coding. One sentence. Dry, butler-ish. Name the track or artist. No judgment, just observation. "I see we\'re debugging to Radiohead, sir." that energy.';
+    const messages = [{
+      role: 'user',
+      content: `[music]\nPlaying on ${source}: ${title}`,
+    }];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 60,
+      system,
+      messages,
+    });
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
 }
 
 module.exports = { AICharacter, CODING_APPS, QUOTES };

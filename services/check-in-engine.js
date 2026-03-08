@@ -238,6 +238,7 @@ class CheckInEngine {
       if (await this._maybeShowInactivityReturn()) return;
       if (await this._maybeShowWeeklyRecap()) return;
       if (await this._maybeShowBrowserDistraction()) return;
+      if (await this._maybeCommentOnMusic()) return;
       if (await this._maybeShowClaudeSessionComment()) return;
       if (await this._maybeShowUncommittedDrift()) return;
       if (await this._maybeShowCommitRoast()) return;
@@ -485,6 +486,44 @@ class CheckInEngine {
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Browser distraction error:', err.message);
+      this._send('check-in-complete', '');
+    }
+    return true;
+  }
+
+  async _maybeCommentOnMusic() {
+    if (!this.appTracker) return false;
+    const music = this.appTracker.getCurrentMusic();
+    if (!music) return false;
+
+    // Only after track has been playing 5+ minutes
+    if (Date.now() - music.detectedAt < 5 * 60 * 1000) return false;
+
+    // Rate limit: 3 hours between music comments
+    const last = this.db.getState('last_music_comment');
+    if (last && (Date.now() - new Date(last)) < 3 * 60 * 60 * 1000) return false;
+
+    // Don't pile on if browser distraction just fired
+    const lastDistraction = this.db.getState('last_browser_distraction_alert');
+    if (lastDistraction && (Date.now() - new Date(lastDistraction)) < 2 * 60 * 60 * 1000) return false;
+
+    // Random skip ~50% to feel organic
+    if (Math.random() < 0.5) return false;
+
+    const projectId = this._getProjectId();
+    this.db.setState('last_music_comment', new Date().toISOString());
+    this._showWindow();
+    this._send('check-in-start', 'watching');
+    try {
+      const message = await this.ai.generateMusicComment({
+        title: music.title,
+        source: music.source,
+        onChunk: (chunk) => this._send('check-in-chunk', chunk),
+      });
+      if (projectId) this.db.saveConversation(projectId, message, 'character');
+      this._send('check-in-complete', message);
+    } catch (err) {
+      console.error('[CheckInEngine] Music comment error:', err.message);
       this._send('check-in-complete', '');
     }
     return true;

@@ -34,14 +34,18 @@ class AppTracker {
     this.claudeProjectName = null;
     this.claudeSessionStart = null;
     this.onClaudeSessionEnd = null;
+    // Music detection
+    this.currentMusic = null; // { title, source, detectedAt }
   }
 
   start() {
     this._poll();
     this._pollClaude();
+    this._pollMusic();
     this._intervalId = setInterval(() => {
       this._poll();
       this._pollClaude();
+      this._pollMusic();
     }, POLL_INTERVAL_MS);
     console.log('[AppTracker] Started');
   }
@@ -185,6 +189,41 @@ class AppTracker {
       minutes,
     };
   }
+
+  _pollMusic() {
+    const script = `
+      tell application "Safari"
+        repeat with w in windows
+          repeat with t in tabs of w
+            set u to URL of t
+            if u contains "youtube.com/watch" or u contains "music.youtube.com" then
+              return (name of t) & "|||" & u
+            end if
+          end repeat
+        end repeat
+        return ""
+      end tell
+    `;
+    exec(`osascript -e '${script}'`, (err, stdout) => {
+      if (err) return;
+      const raw = stdout.trim();
+      if (!raw) { this.currentMusic = null; return; }
+      const [tabTitle, url] = raw.split('|||');
+      if (!url) { this.currentMusic = null; return; }
+      const source = url.includes('music.youtube.com') ? 'YouTube Music' : 'YouTube';
+      const title = tabTitle
+        .replace(/ - YouTube Music$/, '')
+        .replace(/ - YouTube$/, '')
+        .trim();
+      if (!title) { this.currentMusic = null; return; }
+      // Only update detectedAt if track changed
+      if (!this.currentMusic || this.currentMusic.title !== title) {
+        this.currentMusic = { title, source, detectedAt: Date.now() };
+      }
+    });
+  }
+
+  getCurrentMusic() { return this.currentMusic; }
 
   // Returns top N apps sorted by time spent, filtered to > 1 minute
   getSessionSummary(topN = 5) {
