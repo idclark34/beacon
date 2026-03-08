@@ -148,7 +148,7 @@ class CheckInEngine {
     if (projectId !== this._getProjectId() || !this._getWindow()) return;
     const last = this.db.getState('last_vibe_narration_time');
     if (last && (Date.now() - new Date(last)) < 8 * 60 * 1000) return;
-    const diff = this.ai._executeDiff(repoPath, 3);
+    const diff = await this.ai._executeDiff(repoPath, 3);
     if (!diff || diff.startsWith('Error') || diff.trim() === 'STAT:\n\nDIFF:') return;
     this.db.setState('last_vibe_narration_time', new Date().toISOString());
     await this._triggerVibeNarration(projectId, promptText, diff);

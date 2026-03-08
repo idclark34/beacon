@@ -2,7 +2,7 @@
 
 const fs             = require('fs');
 const path           = require('path');
-const { execFile }   = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 const Anthropic = require('@anthropic-ai/sdk');
 
 const CHARACTER_SYSTEM_PROMPT = `You are Alfred — Ian's personal observer. You watch him build. You've been around long enough to have opinions. You are not an assistant. You are not a coach. You are a butler who notices things.
@@ -30,7 +30,8 @@ What Alfred never says:
   "Great job!" or any variation of praise without substance
   "As an AI..." — Alfred is not an AI, he's Alfred
   Anything longer than 3 sentences
-  Exclamation marks used earnestly`;
+  Exclamation marks used earnestly
+  "That file" — always use the actual filename. "main.js" not "that file". "auth.js" not "this file".`;
 
 // ── Alfred personality variants ─────────────────────────────────────────────
 // Routed per trigger — each has the same core identity but a different register.
@@ -314,15 +315,109 @@ class AICharacter {
    * Brainstorm conversation — uses the collaborative thinking partner system prompt.
    * conversationHistory: [{ role: 'user'|'assistant', content: string }]
    * Response may include [PLAN_READY] at the end — caller is responsible for stripping it.
+   * When repoPath is provided, Alfred has read_file + grep_code tools to verify claims.
    */
-  async respondBrainstorm({ userMessage, conversationHistory = [], onChunk }) {
+  async respondBrainstorm({ userMessage, conversationHistory = [], repoPath = null, architectureContext = null, onChunk }) {
     const client = this._getClient();
     const messages = [...conversationHistory, { role: 'user', content: userMessage }];
+
+    if (!repoPath) {
+      let fullResponse = '';
+      const stream = client.messages.stream({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 200,
+        system: BRAINSTORM_SYSTEM_PROMPT,
+        messages,
+      });
+      for await (const event of stream) {
+        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+          fullResponse += event.delta.text;
+          if (onChunk) onChunk(event.delta.text);
+        }
+      }
+      return fullResponse.trim();
+    }
+
+    // With repoPath: tool-call loop (up to 3 rounds) so Alfred verifies before asserting
+    const archNote = architectureContext
+      ? `\n\nProject architecture:\n${architectureContext}`
+      : '';
+    const system = BRAINSTORM_SYSTEM_PROMPT + archNote +
+      '\n\nYou have read_file and grep_code tools. Use them before making any claim about the codebase.' +
+      '\n- To verify a function EXISTS: grep_code for its name.' +
+      '\n- To verify a function is CALLED/WIRED: grep_code for its name as a call site across ALL files — not just the file where it\'s defined.' +
+      '\n- To verify WHICH files call something: grep_code with a broad glob like "*.js".' +
+      '\nNever assert wiring, structure, or code state without checking the right file first.';
+
+    const tools = [
+      {
+        name: 'read_file',
+        description: 'Read a file from the project repo to verify its contents before making claims about it.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'File path relative to the project root' },
+          },
+          required: ['path'],
+        },
+      },
+      {
+        name: 'grep_code',
+        description: 'Search for a pattern across the codebase. Use this to verify whether a function, constant, or pattern actually exists before claiming it does or doesn\'t.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            pattern: { type: 'string', description: 'Literal string or regex to search for' },
+            glob:    { type: 'string', description: 'Optional file glob filter, e.g. "*.js"' },
+          },
+          required: ['pattern'],
+        },
+      },
+    ];
+
+    let rounds = 0;
+    while (rounds < 3) {
+      rounds++;
+      const response = await client.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 300,
+        system,
+        tools,
+        messages,
+      });
+
+      if (response.stop_reason !== 'tool_use') {
+        const text = response.content.find(b => b.type === 'text')?.text?.trim() || '';
+        if (onChunk && text) onChunk(text);
+        return text;
+      }
+
+      const toolResults = response.content
+        .filter(b => b.type === 'tool_use')
+        .map(b => {
+          let content;
+          if (b.name === 'read_file') {
+            console.log(`[AICharacter] respondBrainstorm() peeking at: ${b.input.path}`);
+            content = this._executePeek(b.input.path, repoPath);
+          } else if (b.name === 'grep_code') {
+            console.log(`[AICharacter] respondBrainstorm() searching for: ${b.input.pattern}`);
+            content = this._executeSearch(b.input.pattern, b.input.glob || '*.js', repoPath);
+          } else {
+            content = 'Unknown tool';
+          }
+          return { type: 'tool_result', tool_use_id: b.id, content };
+        });
+
+      messages.push({ role: 'assistant', content: response.content });
+      messages.push({ role: 'user', content: toolResults });
+    }
+
+    // Exhausted tool rounds — stream final answer without tools
     let fullResponse = '';
     const stream = client.messages.stream({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 200,
-      system: BRAINSTORM_SYSTEM_PROMPT,
+      system,
       messages,
     });
     for await (const event of stream) {
@@ -650,6 +745,8 @@ class AICharacter {
       const full = path.resolve(repoPath, filePath);
       // Path traversal guard
       if (!full.startsWith(path.resolve(repoPath))) return 'Error: path outside project root';
+      const stat = fs.statSync(full);
+      if (stat.size > 500_000) return 'Error: file too large to peek';
       const content = fs.readFileSync(full, 'utf8');
       const lines = content.split('\n');
       const capped = lines.slice(0, MAX_LINES).join('\n');
@@ -657,6 +754,25 @@ class AICharacter {
         ? `${capped}\n... (${lines.length - MAX_LINES} more lines)`
         : capped;
     } catch (err) {
+      return `Error: ${err.message}`;
+    }
+  }
+
+  _executeSearch(pattern, glob, repoPath) {
+    const MAX_RESULTS = 25;
+    try {
+      const result = execFileSync(
+        'grep', ['-rn', `--include=${glob}`, pattern, '.'],
+        { cwd: repoPath, timeout: 5000, maxBuffer: 200_000 }
+      ).toString().trim();
+      if (!result) return 'No matches found.';
+      const lines = result.split('\n');
+      const capped = lines.slice(0, MAX_RESULTS).join('\n');
+      return lines.length > MAX_RESULTS
+        ? `${capped}\n... (${lines.length - MAX_RESULTS} more matches)`
+        : capped;
+    } catch (err) {
+      if (err.status === 1) return 'No matches found.';
       return `Error: ${err.message}`;
     }
   }
@@ -1033,7 +1149,7 @@ class AICharacter {
    */
   async generateThrashingObservation({ filePath, saveCount, windowMinutes, onChunk }) {
     const client = this._getClient();
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [thrashing], Ian has saved the same file many times in a short window. One sentence. Don\'t diagnose. Don\'t suggest. Just name the pattern and leave the question open. "You\'ve rewritten that 8 times in 15 minutes. Experimenting, or stuck?" That energy.';
+    const system = ROAST_PROMPT + '\n\nWhen you see [thrashing], Ian has saved the same file many times in a short window. One sentence. Don\'t diagnose. Don\'t suggest. Just name the pattern and leave the question open. "You\'ve rewritten that 8 times in 15 minutes. Experimenting, or stuck?" That energy.';
     const messages = [{ role: 'user', content: `[thrashing]\nFile: ${filePath}\nSaves: ${saveCount} times in ~${windowMinutes} minutes` }];
     return this._stream(client, { model: 'claude-haiku-4-5-20251001', max_tokens: 80, system, messages }, onChunk);
   }
@@ -1043,7 +1159,7 @@ class AICharacter {
    */
   async generateComplexityWarning({ filePath, lineCount, longestFnName, longestFnLines, onChunk }) {
     const client = this._getClient();
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [complexity], Ian has a file or function that has grown too large. One sentence. Name the thing — file or function — and name the number. Don\'t give advice. "This function is 340 lines. It doesn\'t want to be one function." That energy.';
+    const system = ROAST_PROMPT + '\n\nWhen you see [complexity], Ian has a file or function that has grown too large. One sentence. Name the thing — file or function — and name the number. Don\'t give advice. "This function is 340 lines. It doesn\'t want to be one function." That energy.';
     const detail = longestFnName && longestFnLines > 60
       ? `File: ${filePath} (${lineCount} lines)\nLongest function: ${longestFnName} — ${longestFnLines} lines`
       : `File: ${filePath} — ${lineCount} lines`;
@@ -1067,7 +1183,7 @@ class AICharacter {
    */
   async generateTestGapPerFile({ filePath, saveCount, hasTestFile, onChunk }) {
     const client = this._getClient();
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [test gap per file], Ian has been editing a code file repeatedly but no tests have moved. One sentence. Name the file. Don\'t lecture. "You\'ve touched auth.js twelve times this session. The tests haven\'t moved." That energy.';
+    const system = ROAST_PROMPT + '\n\nWhen you see [test gap per file], Ian has been editing a code file repeatedly but no tests have moved. One sentence. Name the file. Don\'t lecture. "You\'ve touched auth.js twelve times this session. The tests haven\'t moved." That energy.';
     const testLine = hasTestFile ? 'Test file exists but untouched this session' : 'No test file found';
     const messages = [{ role: 'user', content: `[test gap per file]\nFile: ${filePath}\nSaves this session: ${saveCount}\n${testLine}` }];
     return this._stream(client, { model: 'claude-haiku-4-5-20251001', max_tokens: 80, system, messages }, onChunk);
@@ -1078,7 +1194,7 @@ class AICharacter {
    */
   async generateCodeSmellPattern({ filePath, smell, onChunk }) {
     const client = this._getClient();
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [code smell], Ian\'s code has a structural pattern worth naming. One sentence. Name the file and the specific thing you see. Don\'t explain what it means or how to fix it. "Six parameters means six concerns. That\'s not a function, it\'s a negotiation." That energy.';
+    const system = ROAST_PROMPT + '\n\nWhen you see [code smell], Ian\'s code has a structural pattern worth naming. One sentence. Name the file and the specific thing you see. Don\'t explain what it means or how to fix it. "Six parameters means six concerns. That\'s not a function, it\'s a negotiation." That energy.';
     const messages = [{ role: 'user', content: `[code smell]\nFile: ${filePath}\nPattern: ${smell}` }];
     return this._stream(client, { model: 'claude-haiku-4-5-20251001', max_tokens: 80, system, messages }, onChunk);
   }
@@ -1327,7 +1443,7 @@ class AICharacter {
    */
   async generateTestGapObservation({ newFileCount, projectName, onChunk }) {
     const client = this._getClient();
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [test gap], Ian committed files — none of them tests. One sentence. Hold up the mirror. Don\'t lecture. Just notice.';
+    const system = ROAST_PROMPT + '\n\nWhen you see [test gap], Ian committed files — none of them tests. One sentence. Hold up the mirror. Don\'t lecture. Just notice.';
     const messages = [{
       role: 'user',
       content: `[test gap]\nProject: ${projectName}\nNon-test files: ${newFileCount}\nTest files: 0`,
