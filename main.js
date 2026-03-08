@@ -123,18 +123,35 @@ function openSettings() {
 // ── Tray ───────────────────────────────────────────────────────────────────
 
 function createTray() {
-  // 16x16 green dot icon drawn with nativeImage (no external file needed)
+  // 16x16 "A" monogram icon drawn with nativeImage (no external file needed)
   const size = 16;
+  const ICON_ROWS = [
+    '0000000000000000',
+    '0000011110000000',  // peak
+    '0000011110000000',
+    '0000110011000000',
+    '0000110011000000',
+    '0001100001100000',
+    '0001111111100000',  // crossbar
+    '0001111111100000',
+    '0001100001100000',
+    '0011000000110000',
+    '0011000000110000',
+    '0110000000011000',
+    '0110000000011000',
+    '0000000000000000',
+    '0000000000000000',
+    '0000000000000000',
+  ];
   const canvas = Buffer.alloc(size * size * 4);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const dx = x - size / 2, dy = y - size / 2;
-      const inside = dx * dx + dy * dy <= (size / 2 - 1) * (size / 2 - 1);
+      if (ICON_ROWS[y][x] !== '1') continue;
       const i = (y * size + x) * 4;
-      canvas[i]     = inside ? 74  : 0;   // R
-      canvas[i + 1] = inside ? 222 : 0;   // G
-      canvas[i + 2] = inside ? 128 : 0;   // B
-      canvas[i + 3] = inside ? 255 : 0;   // A
+      canvas[i]     = 74;   // R  (#4ade80 green)
+      canvas[i + 1] = 222;  // G
+      canvas[i + 2] = 128;  // B
+      canvas[i + 3] = 255;  // A
     }
   }
   const icon = nativeImage.createFromBuffer(canvas, { width: size, height: size });
@@ -143,6 +160,7 @@ function createTray() {
 
   const menu = Menu.buildFromTemplate([
     { label: 'Check in now', click: () => engine.triggerCheckIn() },
+    { label: 'Look at me', click: () => engine.triggerVisualObservation() },
     { label: 'Comment on music', click: () => {
       const music = appTracker.getCurrentMusic();
       if (!music) { console.log('[Tray] No music detected'); return; }

@@ -33,6 +33,7 @@ class CheckInTriggers {
       return false;
     }
     this._speaking = true;
+    this.ai._projectId = this._getProjectId();
     this._showWindow();
     this._send('check-in-start', mood);
     return true;
@@ -73,7 +74,7 @@ class CheckInTriggers {
         emit("I'm here, Ian. Something got in the way of the words.");
       }
       const final = message || "I'm here, Ian. Something got in the way of the words.";
-      this.db.saveConversation(projectId, final, 'character');
+      this.db.saveConversation(projectId, final, 'character', 'check_in');
       this._send('check-in-complete', final);
       if (await this._shouldSpeak()) this._speak(final);
     } catch (err) {
@@ -81,6 +82,43 @@ class CheckInTriggers {
       const fallback = "I seem to have lost my train of thought. I'll try again shortly.";
       emit(fallback);
       this._send('check-in-complete', fallback);
+    } finally {
+      this._finishCheckIn();
+    }
+  }
+
+  /** Alfred reads the room — camera is the subject, code context is background. */
+  async triggerVisualObservation() {
+    const projectId = this._getProjectId();
+    if (!this._getWindow()) return;
+
+    this._stopSpeaking();
+    if (!this._startCheckIn('watching')) return;
+
+    const imageBase64 = await this._captureFrame().catch(() => null);
+    if (!imageBase64) {
+      console.warn('[CheckInEngine] Visual observation: no frame captured');
+      this._send('check-in-complete', '');
+      this._finishCheckIn();
+      return;
+    }
+
+    const emit = (chunk) => this._send('check-in-chunk', chunk);
+    try {
+      const project = projectId ? this.db.getProject(projectId) : null;
+      const message = await this.ai.generateVisualObservation({
+        projectId,
+        repoPath: project?.repo_path || null,
+        imageBase64,
+        onChunk: emit,
+      });
+      const final = message || "I seem to have lost my words.";
+      if (projectId) this.db.saveConversation(projectId, final, 'character');
+      this._send('check-in-complete', final);
+      if (await this._shouldSpeak()) this._speak(final);
+    } catch (err) {
+      console.error('[CheckInEngine] Visual observation error:', err.message);
+      this._send('check-in-complete', '');
     } finally {
       this._finishCheckIn();
     }
@@ -161,7 +199,7 @@ class CheckInTriggers {
         projectId,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'intro');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Intro check-in error:', err.message);
@@ -178,7 +216,7 @@ class CheckInTriggers {
         projectId,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'weekly_recap');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Weekly recap error:', err.message);
@@ -195,7 +233,7 @@ class CheckInTriggers {
         items,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'intel_drop');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Intel drop error:', err.message);
@@ -212,7 +250,7 @@ class CheckInTriggers {
         branch,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'branch_roast');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Branch roast error:', err.message);
@@ -229,7 +267,7 @@ class CheckInTriggers {
         message: badMessage,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'commit_roast');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Commit roast error:', err.message);
@@ -247,7 +285,7 @@ class CheckInTriggers {
         minutes: session.minutes,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'claude_session');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Claude session comment error:', err.message);
@@ -265,7 +303,7 @@ class CheckInTriggers {
         minutes: distraction.minutes,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      if (projectId) this.db.saveConversation(projectId, message, 'character');
+      if (projectId) this.db.saveConversation(projectId, message, 'character', 'browser_distraction');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Browser distraction error:', err.message);
@@ -282,7 +320,7 @@ class CheckInTriggers {
         sessionMinutes, saveCount, projectName,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'uncommitted_drift');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Uncommitted drift error:', err.message);
@@ -299,7 +337,7 @@ class CheckInTriggers {
         newFileCount: nonTestCount, projectName,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'test_gap');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Test gap error:', err.message);
@@ -320,7 +358,7 @@ class CheckInTriggers {
         findings, commitHash,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'secret_alert');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Secret alert error:', err.message);
@@ -339,7 +377,7 @@ class CheckInTriggers {
         issues,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'dep_alert');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Dep alert error:', err.message);
@@ -363,7 +401,7 @@ class CheckInTriggers {
         projectedMonthly: data.projected || 0,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      if (projectId) this.db.saveConversation(projectId, message, 'character');
+      if (projectId) this.db.saveConversation(projectId, message, 'character', 'spend_alert');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Spend alert error:', err.message);
@@ -382,7 +420,7 @@ class CheckInTriggers {
         source: music.source,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      if (projectId) this.db.saveConversation(projectId, message, 'character');
+      if (projectId) this.db.saveConversation(projectId, message, 'character', 'music_comment');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Music comment error:', err.message);
@@ -401,7 +439,7 @@ class CheckInTriggers {
         distractionMinutes,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'distraction_return');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Distraction return error:', err.message);
@@ -430,7 +468,7 @@ class CheckInTriggers {
         lastCommit,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'building_return');
       this._send('check-in-complete', message);
       if (await this._shouldSpeak()) this._speak(message);
     } catch (err) {
@@ -451,7 +489,7 @@ class CheckInTriggers {
         daysSince, projectId,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'inactivity_return');
       this._send('check-in-complete', message);
       setTimeout(() => this._maybeShowProgressNarrative(), 60000);
     } catch (err) {
@@ -471,7 +509,7 @@ class CheckInTriggers {
         type, projectNames: names, daySpan,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'project_switch');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Project switch warning error:', err.message);
@@ -490,7 +528,7 @@ class CheckInTriggers {
         quote,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'quote');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Quote error:', err.message);
@@ -510,7 +548,7 @@ class CheckInTriggers {
         projectId,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'progress_narrative');
       this._send('check-in-complete', message);
     } catch (err) {
       console.error('[CheckInEngine] Progress narrative error:', err.message);
@@ -531,7 +569,7 @@ class CheckInTriggers {
         projectName: project?.name || 'unknown',
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'vibe_narration');
       this._send('check-in-complete', message);
       if (await this._shouldSpeak()) this._speak(message);
     } catch (err) {
@@ -553,7 +591,7 @@ class CheckInTriggers {
         projectName: projectName || 'unknown',
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'vibe_wrap_up');
       this._send('check-in-complete', message);
       if (await this._shouldSpeak()) this._speak(message);
     } catch (err) {
@@ -575,7 +613,7 @@ class CheckInTriggers {
         projectName: project?.name || 'unknown',
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'code_quality');
       this._send('check-in-complete', message);
       this._pendingCodeFix = { projectId, findings };
       this._send('check-in-action', { actionId: 'fix-code-quality', label: 'Review changes →' });
@@ -597,7 +635,7 @@ class CheckInTriggers {
         filePath, saveCount, windowMinutes: 2,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'thrashing');
       this._send('check-in-complete', message);
       if (await this._shouldSpeak()) this._speak(message);
     } catch (err) {
@@ -617,7 +655,7 @@ class CheckInTriggers {
         filePath, lineCount, longestFnLines, longestFnName,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'complexity');
       this._send('check-in-complete', message);
       if (await this._shouldSpeak()) this._speak(message);
     } catch (err) {
@@ -637,7 +675,7 @@ class CheckInTriggers {
         functionName, fileCount, files,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'refactor');
       this._send('check-in-complete', message);
       if (await this._shouldSpeak()) this._speak(message);
     } catch (err) {
@@ -657,7 +695,7 @@ class CheckInTriggers {
         filePath, saveCount, hasTestFile,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'test_gap_file');
       this._send('check-in-complete', message);
       if (await this._shouldSpeak()) this._speak(message);
     } catch (err) {
@@ -677,7 +715,7 @@ class CheckInTriggers {
         filePath, smell,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'code_smell');
       this._send('check-in-complete', message);
       if (await this._shouldSpeak()) this._speak(message);
     } catch (err) {
@@ -698,7 +736,7 @@ class CheckInTriggers {
         filePath, content, saveCount,
         onChunk: (chunk) => this._send('check-in-chunk', chunk),
       });
-      this.db.saveConversation(projectId, message, 'character');
+      this.db.saveConversation(projectId, message, 'character', 'file_observation');
       this._send('check-in-complete', message);
       if (await this._shouldSpeak()) this._speak(message);
     } catch (err) {

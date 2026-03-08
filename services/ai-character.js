@@ -1062,9 +1062,10 @@ class AICharacter {
 
     const system = HYPE_PROMPT + '\n\nWhen you see [vibe narration], Ian just finished a Claude Code session. Name what was actually accomplished — one observation, in Alfred\'s voice. Not a summary. Not a list.\n\nRules:\n- 1 sentence. 2 at most.\n- Lead with what landed, not what was done to get there.\n- Warm underneath, but don\'t show it. Let the acknowledgment carry it.\n- If something is obviously missing or risky, name it — but only if it\'s glaring.\n\nGood examples:\n  "That\'s the auth layer in. Took the morning."\n  "One file, one fix. Clean."\n  "The payment flow is wired. It\'s real now."\n  "You got the scanner working. About time."';
 
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[vibe narration]\nProject: ${projectName}\nUser prompt: "${promptText}"\n\nWhat Claude actually changed:\n${diff}`,
+      content: `[vibe narration]\nProject: ${projectName}\nUser prompt: "${promptText}"\n\nWhat Claude actually changed:\n${diff}${memory}`,
     }];
 
     let fullResponse = '';
@@ -1107,9 +1108,10 @@ class AICharacter {
     const system = HYPE_PROMPT + '\n\nWhen you see [progress], reflect on what Ian has built — not the numbers, the arc. What has he actually constructed? Speak like you\'ve been watching the whole time. Past tense. 2-3 sentences. Make it feel earned, not flattering.';
 
     const contextStr = contextLines.length > 0 ? `\n\nWhat you've seen:\n${contextLines.join('\n')}` : '';
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[progress]${contextStr}`,
+      content: `[progress]${contextStr}${memory}`,
     }];
 
     let fullResponse = '';
@@ -1138,9 +1140,10 @@ class AICharacter {
 
     const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [file observation], you\'ve been watching Ian edit this file repeatedly. You\'ve read it. React to what\'s actually there — the complexity, what it\'s trying to do, whether it\'s getting tangled. 1-2 sentences. You have a take. Don\'t be vague. Don\'t be a reviewer. Be Alfred.';
 
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[file observation]\nFile: ${filePath} (saved ${saveCount} times in the last 30 minutes)\n\n${content}`,
+      content: `[file observation]\nFile: ${filePath} (saved ${saveCount} times in the last 30 minutes)\n\n${content}${memory}`,
     }];
 
     let fullResponse = '';
@@ -1166,7 +1169,8 @@ class AICharacter {
   async generateThrashingObservation({ filePath, saveCount, windowMinutes, onChunk }) {
     const client = this._getClient();
     const system = ROAST_PROMPT + '\n\nWhen you see [thrashing], Ian has saved the same file many times in a short window. One sentence. Don\'t diagnose. Don\'t suggest. Just name the pattern and leave the question open. "You\'ve rewritten that 8 times in 15 minutes. Experimenting, or stuck?" That energy.';
-    const messages = [{ role: 'user', content: `[thrashing]\nFile: ${filePath}\nSaves: ${saveCount} times in ~${windowMinutes} minutes` }];
+    const memory = this._buildMemoryBlock();
+    const messages = [{ role: 'user', content: `[thrashing]\nFile: ${filePath}\nSaves: ${saveCount} times in ~${windowMinutes} minutes${memory}` }];
     return this._stream(client, { model: 'claude-haiku-4-5-20251001', max_tokens: 80, system, messages }, onChunk);
   }
 
@@ -1179,7 +1183,8 @@ class AICharacter {
     const detail = longestFnName && longestFnLines > 60
       ? `File: ${filePath} (${lineCount} lines)\nLongest function: ${longestFnName} — ${longestFnLines} lines`
       : `File: ${filePath} — ${lineCount} lines`;
-    const messages = [{ role: 'user', content: `[complexity]\n${detail}` }];
+    const memory = this._buildMemoryBlock();
+    const messages = [{ role: 'user', content: `[complexity]\n${detail}${memory}` }];
     return this._stream(client, { model: 'claude-haiku-4-5-20251001', max_tokens: 80, system, messages }, onChunk);
   }
 
@@ -1190,7 +1195,8 @@ class AICharacter {
     const client = this._getClient();
     const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [refactor], Ian has the same function or pattern in multiple files. One sentence. Name the function and the count. Don\'t prescribe the fix. "parseUser() exists in 3 files. Make it one place." That energy.';
     const fileList = files.slice(0, 4).map(f => `  ${f}`).join('\n');
-    const messages = [{ role: 'user', content: `[refactor]\nFunction: ${functionName}\nFound in ${fileCount} files:\n${fileList}` }];
+    const memory = this._buildMemoryBlock();
+    const messages = [{ role: 'user', content: `[refactor]\nFunction: ${functionName}\nFound in ${fileCount} files:\n${fileList}${memory}` }];
     return this._stream(client, { model: 'claude-haiku-4-5-20251001', max_tokens: 80, system, messages }, onChunk);
   }
 
@@ -1201,7 +1207,8 @@ class AICharacter {
     const client = this._getClient();
     const system = ROAST_PROMPT + '\n\nWhen you see [test gap per file], Ian has been editing a code file repeatedly but no tests have moved. One sentence. Name the file. Don\'t lecture. "You\'ve touched auth.js twelve times this session. The tests haven\'t moved." That energy.';
     const testLine = hasTestFile ? 'Test file exists but untouched this session' : 'No test file found';
-    const messages = [{ role: 'user', content: `[test gap per file]\nFile: ${filePath}\nSaves this session: ${saveCount}\n${testLine}` }];
+    const memory = this._buildMemoryBlock();
+    const messages = [{ role: 'user', content: `[test gap per file]\nFile: ${filePath}\nSaves this session: ${saveCount}\n${testLine}${memory}` }];
     return this._stream(client, { model: 'claude-haiku-4-5-20251001', max_tokens: 80, system, messages }, onChunk);
   }
 
@@ -1211,7 +1218,8 @@ class AICharacter {
   async generateCodeSmellPattern({ filePath, smell, onChunk }) {
     const client = this._getClient();
     const system = ROAST_PROMPT + '\n\nWhen you see [code smell], Ian\'s code has a structural pattern worth naming. One sentence. Name the file and the specific thing you see. Don\'t explain what it means or how to fix it. "Six parameters means six concerns. That\'s not a function, it\'s a negotiation." That energy.';
-    const messages = [{ role: 'user', content: `[code smell]\nFile: ${filePath}\nPattern: ${smell}` }];
+    const memory = this._buildMemoryBlock();
+    const messages = [{ role: 'user', content: `[code smell]\nFile: ${filePath}\nPattern: ${smell}${memory}` }];
     return this._stream(client, { model: 'claude-haiku-4-5-20251001', max_tokens: 80, system, messages }, onChunk);
   }
 
@@ -1372,6 +1380,68 @@ class AICharacter {
   }
 
   /**
+   * Camera-first check-in — Alfred reads the room, not the diff.
+   * imageBase64 is required. Code/activity context is background only.
+   */
+  async generateVisualObservation({ projectId, repoPath, imageBase64, onChunk }) {
+    const client = this._getClient();
+    if (!imageBase64) return null;
+
+    const contextLines = [];
+
+    // Project name
+    const project = projectId ? this.db.getProject(projectId) : null;
+    if (project?.name) contextLines.push(`Project: ${project.name}`);
+
+    // App activity
+    if (this.appTracker) {
+      const current = this.appTracker.getCurrentApp();
+      if (current) contextLines.push(`Currently in: ${current}`);
+      const domain = this.appTracker.getCurrentDomain();
+      if (domain) contextLines.push(`Browser: ${domain}`);
+      const claude = this.appTracker.getClaudeSession();
+      if (claude) contextLines.push(`Claude Code: ${claude.projectName || 'active'} (${claude.minutes} min)`);
+      const music = this.appTracker.getCurrentMusic();
+      if (music) contextLines.push(`Music: ${music.title} on ${music.source}`);
+    }
+
+    // Recent code work (light context — not the focus)
+    if (repoPath) {
+      try {
+        const log = execSync('git log --oneline -5', { cwd: repoPath, timeout: 3000 }).toString().trim();
+        if (log) contextLines.push(`Recent commits:\n${log.split('\n').map(l => `  ${l}`).join('\n')}`);
+      } catch {}
+    }
+
+    const contextStr = contextLines.length > 0
+      ? `\n\nBackground context:\n${contextLines.join('\n')}`
+      : '';
+
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [visual check-in], you are looking directly at the user right now through the camera. Lead with what you observe — their posture, their environment, the lighting, the time of day, the energy in the room. Speak to the person, not the code. Use the background context to understand what they\'re in the middle of, but your observation should be about them, not their commits. One or two sentences. Alfred reading the room — the way a good butler notices things without being asked. Specific details land better than general impressions.';
+
+    const memory = this._buildMemoryBlock();
+    const userContent = [
+      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
+      { type: 'text', text: `[visual check-in]${contextStr}${memory}` },
+    ];
+
+    let fullResponse = '';
+    const stream = client.messages.stream({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 120,
+      system,
+      messages: [{ role: 'user', content: userContent }],
+    });
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        fullResponse += event.delta.text;
+        if (onChunk) onChunk(event.delta.text);
+      }
+    }
+    return fullResponse.trim();
+  }
+
+  /**
    * Fires when committed code has TODO debt or console.log proliferation.
    * findings: [{ type: 'todo'|'console_log', count, examples: [{file, text}] }]
    */
@@ -1392,9 +1462,10 @@ class AICharacter {
 
     const system = ROAST_PROMPT + '\n\nWhen you see [code quality], the AI just committed code with problems — TODOs left behind, or console.logs shipped. One or two sentences. Don\'t explain what they should do. Just name what you see. The AI wrote it; Ian shipped it. That\'s the dynamic worth noticing.';
 
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[code quality]\nProject: ${projectName}\n\n${lines}`,
+      content: `[code quality]\nProject: ${projectName}\n\n${lines}${memory}`,
     }];
 
     let fullResponse = '';
@@ -1420,9 +1491,10 @@ class AICharacter {
   async generateVibeWrapUp({ sessionMinutes, commitsDuring, filesSaved, projectName, onChunk }) {
     const client = this._getClient();
     const system = HYPE_PROMPT + '\n\nWhen you see [session wrap-up], the Claude Code session just closed. Comment on what got done — commits, files saved, duration. One or two sentences. Acknowledge without over-praising. If nothing was committed, notice that plainly.';
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[session wrap-up]\nProject: ${projectName}\nSession: ${sessionMinutes}m\nCommits: ${commitsDuring}\nFiles saved: ${filesSaved}`,
+      content: `[session wrap-up]\nProject: ${projectName}\nSession: ${sessionMinutes}m\nCommits: ${commitsDuring}\nFiles saved: ${filesSaved}${memory}`,
     }];
 
     let fullResponse = '';
@@ -1448,9 +1520,10 @@ class AICharacter {
   async generateUncommittedDrift({ sessionMinutes, saveCount, projectName, onChunk }) {
     const client = this._getClient();
     const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [uncommitted drift], saves are piling up but nothing\'s committed. Observe the accumulation, not the failure. One or two sentences. Not scolding — just noting the weight of unsaved progress.';
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[uncommitted drift]\nProject: ${projectName}\nSession: ${sessionMinutes}m\nSaves since last commit: ${saveCount}`,
+      content: `[uncommitted drift]\nProject: ${projectName}\nSession: ${sessionMinutes}m\nSaves since last commit: ${saveCount}${memory}`,
     }];
 
     let fullResponse = '';
@@ -1476,9 +1549,10 @@ class AICharacter {
   async generateTestGapObservation({ newFileCount, projectName, onChunk }) {
     const client = this._getClient();
     const system = ROAST_PROMPT + '\n\nWhen you see [test gap], Ian committed files — none of them tests. One sentence. Hold up the mirror. Don\'t lecture. Just notice.';
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[test gap]\nProject: ${projectName}\nNon-test files: ${newFileCount}\nTest files: 0`,
+      content: `[test gap]\nProject: ${projectName}\nNon-test files: ${newFileCount}\nTest files: 0${memory}`,
     }];
 
     let fullResponse = '';
@@ -1504,9 +1578,10 @@ class AICharacter {
   async generateMusicComment({ title, source, onChunk }) {
     const client = this._getClient();
     const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [music], Ian is listening to something while coding. One or two sentences. Dry, butler-ish. You MUST open by naming the actual track or artist so it\'s clear you\'re commenting on the music — the listener should immediately know what you\'re referring to. "I see we\'re debugging to Radiohead, sir." or "Lofi hip-hop. A classic choice for pretending to focus." that energy. Never say "this" or "that" without naming it first.';
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[music]\nPlaying on ${source}: ${title}`,
+      content: `[music]\nPlaying on ${source}: ${title}${memory}`,
     }];
 
     let fullResponse = '';
