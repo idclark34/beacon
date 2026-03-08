@@ -6,64 +6,64 @@ const $ = id => document.getElementById(id);
 
 const ALFRED_FRAMES = {
   normal: [
-    `  .-.
- (o.o)
+    ` (-._-)
   \\-/
  /|=|\\
-  | |`,
-    `  .-.
- (-.-)
+  | |
+ _/ \\_`,
+    ` (-.--)
   \\-/
  /|=|\\
-  | |`,
+  | |
+ _/ \\_`,
   ],
   roast: [
-    `  .-.
- (^.-)
+    ` (-_,-)
   \\-/
  /|=|\\
-  | |`,
-    `  .-.
- (-.^)
+  | |
+ _/ \\_`,
+    ` (-,-_)
   \\-/
  /|=|\\
-  | |`,
+  | |
+ _/ \\_`,
   ],
   alert: [
-    `  /!\\
- (O.O)
+    ` (!O_O)
   \\=/
  /|!|\\
-  | |`,
-    `  !!!
- (O.O)
+  | |
+ _/ \\_`,
+    ` (O_O!)
   \\=/
  /|!|\\
-  | |`,
+  | |
+ _/ \\_`,
   ],
   watching: [
-    `  .-.
- (>.>)
+    ` (-_.>)
   \\-/
  /|=|\\
-  | |`,
-    `  .-.
- (.>>)
+  | |
+ _/ \\_`,
+    ` (-..>)
   \\-/
  /|=|\\
-  | |`,
+  | |
+ _/ \\_`,
   ],
   welcome: [
-    `  .-.
- (^.^)
+    ` (^._^)
   \\u/
  /|=|\\
-  | |`,
-    `  .-.
- (^ ^)
+  | |
+ _/ \\_`,
+    ` (^. ^)
   \\u/
  /|=|\\
-  | |`,
+  | |
+ _/ \\_`,
   ],
 };
 
@@ -155,6 +155,9 @@ function startStream(mood = 'normal') {
   typeQueue = [];
   typeRunning = false;
   $('popup-cursor').classList.remove('hidden');
+  $('copy-btn').classList.add('hidden');
+  $('copy-btn').textContent = 'copy';
+  $('copy-btn').classList.remove('copied');
   $('app').classList.add('streaming');
   startAlfred(mood);
 
@@ -178,6 +181,7 @@ function endStream() {
     $('popup-cursor').classList.add('hidden');
     $('app').classList.remove('streaming');
     idleAlfred();
+    $('copy-btn').classList.remove('hidden');
     showChatInput();
     startCountdown();
   };
@@ -399,6 +403,20 @@ function setupIPCListeners() {
 // ── Event Listeners ────────────────────────────────────────────────────────
 
 function setupListeners() {
+  // Copy button
+  $('copy-btn').addEventListener('click', () => {
+    const text = $('popup-text').textContent;
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => {
+      $('copy-btn').textContent = 'copied!';
+      $('copy-btn').classList.add('copied');
+      setTimeout(() => {
+        $('copy-btn').textContent = 'copy';
+        $('copy-btn').classList.remove('copied');
+      }, 2000);
+    });
+  });
+
   // Action button (code quality fix)
   $('action-btn').addEventListener('click', () => {
     const btn = $('action-btn');

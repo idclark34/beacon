@@ -1,18 +1,24 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:        rgba(16, 16, 16, 0.72);
-  --bg-elevated: #1e1e1e;
-  --bg-input:  rgba(255, 255, 255, 0.06);
-  --border:    rgba(255, 255, 255, 0.09);
-  --border-hi: rgba(255, 255, 255, 0.15);
-  --text: #e8e8e8;
+  /* Bubble theme */
+  --bubble-bg:    #fefce8;
+  --bubble-text:  #1a1a1a;
+  --bubble-label: #a16207;
+  --bubble-muted: #78716c;
+  --bubble-dim:   #a8a29e;
+  /* Onboarding dark theme */
+  --bg:         rgba(16, 16, 16, 0.72);
+  --bg-input:   rgba(255, 255, 255, 0.06);
+  --border:     rgba(255, 255, 255, 0.09);
+  --border-hi:  rgba(255, 255, 255, 0.15);
+  --text:       #e8e8e8;
   --text-muted: #777;
-  --text-dim: #444;
-  --accent: #4ade80;
-  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: 'SF Mono', 'JetBrains Mono', ui-monospace, monospace;
-  --radius: 14px;
+  --text-dim:   #444;
+  --accent:     #4ade80;
+  --radius:     14px;
+  --font:       -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono:  'SF Mono', 'Fira Code', ui-monospace, monospace;
 }
 
 html, body {
@@ -20,7 +26,6 @@ html, body {
   background: transparent;
   font-family: var(--font);
   font-size: 13px;
-  color: var(--text);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
@@ -29,6 +34,43 @@ html, body {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  background: transparent;
+  overflow: hidden;
+}
+
+.screen { display: flex; flex-direction: column; flex: 1; }
+.hidden { display: none !important; }
+
+/* ── Entry / Exit animations ────────────────────────────────────────────────── */
+
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(120%) scale(0.95); }
+  to   { opacity: 1; transform: translateX(0)    scale(1);    }
+}
+@keyframes slideOutRight {
+  from { opacity: 1; transform: translateX(0)    scale(1);    }
+  to   { opacity: 0; transform: translateX(120%) scale(0.95); }
+}
+
+#app.entering { animation: slideInRight 400ms ease-out forwards; }
+#app.exiting  { animation: slideOutRight 300ms ease-in  forwards; }
+
+/* ── Avatar (onboarding only) ───────────────────────────────────────────────── */
+
+.avatar {
+  width: 32px; height: 32px; border-radius: 50%;
+  background: var(--accent); color: #000;
+  font-weight: 700; font-size: 11px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+
+/* ── Onboarding ─────────────────────────────────────────────────────────────── */
+
+#onboarding {
+  padding: 20px;
+  gap: 16px;
+  justify-content: center;
   background: var(--bg);
   backdrop-filter: blur(40px) saturate(160%);
   -webkit-backdrop-filter: blur(40px) saturate(160%);
@@ -39,66 +81,17 @@ html, body {
     0 2px 8px rgba(0,0,0,0.4),
     0 12px 40px rgba(0,0,0,0.55),
     0 32px 80px rgba(0,0,0,0.35);
-  overflow: hidden;
-  transition: border-color 0.3s, box-shadow 0.3s;
+  color: var(--text);
 }
 
-.screen { display: flex; flex-direction: column; flex: 1; overflow-y: auto; }
-.hidden { display: none !important; }
-
-/* ── Entry / Exit animations ── */
-@keyframes slideUp {
-  from { opacity: 0; transform: translateY(16px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-@keyframes slideDown {
-  from { opacity: 1; transform: translateY(0); }
-  to   { opacity: 0; transform: translateY(16px); }
-}
-
-#app.entering {
-  animation: slideUp 280ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
-}
-#app.exiting {
-  animation: slideDown 200ms ease-in forwards;
-}
-
-/* ── Streaming glow ── */
-#app.streaming {
-  border-color: rgba(74, 222, 128, 0.20);
-  box-shadow:
-    0 0 0 0.5px var(--border-hi) inset,
-    0 2px 8px rgba(0,0,0,0.4),
-    0 12px 40px rgba(0,0,0,0.55),
-    0 32px 80px rgba(0,0,0,0.35),
-    0 0 0 1px rgba(74,222,128,0.18),
-    0 0 24px rgba(74,222,128,0.10);
-}
-
-/* ── Avatar (onboarding only) ── */
-.avatar {
-  width: 32px; height: 32px; border-radius: 50%;
-  background: var(--accent); color: #000;
-  font-weight: 700; font-size: 11px;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
-}
-
-/* ── Onboarding ── */
-#onboarding {
-  padding: 20px;
-  gap: 16px;
-  justify-content: center;
-}
-#ob-header {
-  display: flex; align-items: center; gap: 12px;
-}
+#ob-header { display: flex; align-items: center; gap: 12px; }
 .ob-title { font-size: 14px; font-weight: 600; }
 .ob-sub   { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
 .field-group { display: flex; flex-direction: column; gap: 5px; }
 .field-group label { font-size: 11px; color: var(--text-muted); font-weight: 500; }
 .optional { color: var(--text-dim); font-weight: 400; }
+
 .field {
   background: var(--bg-input);
   border: 1px solid var(--border);
@@ -120,133 +113,173 @@ html, body {
   cursor: pointer; width: 100%;
   transition: opacity 0.15s;
 }
-.btn-go:hover { opacity: 0.85; }
+.btn-go:hover    { opacity: 0.85; }
 .btn-go:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* ── Alfred ASCII character ── */
-#alfred-section {
-  display: flex;
-  justify-content: center;
-  flex-shrink: 0;
-  padding: 2px 0;
-}
+/* ── Popup container ─────────────────────────────────────────────────────────── */
 
-#alfred-art {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.35;
-  color: var(--accent);
-  text-align: center;
-  white-space: pre;
-  user-select: none;
-  transition: color 0.4s ease, opacity 0.4s ease;
-  opacity: 0.88;
-  letter-spacing: 0.02em;
-}
-
-#alfred-art.idle   { opacity: 0.38; }
-#alfred-art[data-mood="roast"]    { color: #facc15; }
-#alfred-art[data-mood="alert"]    { color: #f87171; }
-#alfred-art[data-mood="watching"] { color: #60a5fa; }
-#alfred-art[data-mood="welcome"]  { color: #a78bfa; }
-
-/* ── Popup ── */
 #popup {
-  padding: 14px 16px 0;
-  gap: 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 0 16px;
+  overflow: visible;
   -webkit-app-region: no-drag;
 }
+
+/* ── Speech bubble + Alfred row ─────────────────────────────────────────────── */
+
+#popup-layout {
+  display: flex;
+  align-items: flex-end;
+  gap: 0;
+  padding-bottom: 8px;
+}
+
+/* ── Speech bubble ───────────────────────────────────────────────────────────── */
+
+#bubble {
+  flex: 1;
+  min-width: 0;
+  max-width: 300px;
+  background: var(--bubble-bg);
+  color: var(--bubble-text);
+  border-radius: 18px 18px 18px 4px;
+  padding: 14px 18px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  position: relative;
+  font-family: var(--font-mono);
+}
+
+/* Triangle pointer — right side of bubble, pointing toward Alfred */
+#bubble-pointer {
+  position: absolute;
+  bottom: 12px;
+  right: -8px;
+  width: 0; height: 0;
+  border-left: 10px solid var(--bubble-bg);
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+}
+
+/* Streaming pulse */
+#app.streaming #bubble {
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3), 0 0 0 1.5px rgba(161,98,7,0.25);
+}
+
+/* ── Bubble header ───────────────────────────────────────────────────────────── */
 
 #popup-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  margin-bottom: 6px;
   -webkit-app-region: drag;
-  flex-shrink: 0;
 }
 
 #popup-badge {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 10px;
+  gap: 5px;
+  font-size: 11px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--bubble-label);
   letter-spacing: 0.05em;
 }
 
 #popup-dot {
-  width: 6px; height: 6px;
+  width: 5px; height: 5px;
   border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 6px rgba(74, 222, 128, 0.5);
+  background: var(--bubble-label);
   flex-shrink: 0;
 }
 
 #popup-dismiss {
   -webkit-app-region: no-drag;
   background: none; border: none;
-  color: var(--text-dim); font-size: 16px; line-height: 1;
+  color: var(--bubble-dim); font-size: 16px; line-height: 1;
   cursor: pointer; padding: 0 2px;
   transition: color 0.15s;
   flex-shrink: 0;
 }
-#popup-dismiss:hover { color: var(--text-muted); }
+#popup-dismiss:hover { color: var(--bubble-muted); }
+
+/* ── Message text ────────────────────────────────────────────────────────────── */
 
 #popup-message {
-  font-family: var(--font-mono);
-  font-size: 15px;
-  line-height: 1.6;
-  color: var(--text);
-  flex: 1;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--bubble-text);
 }
 
-/* ── Cursor ── */
+/* ── Cursor ─────────────────────────────────────────────────────────────────── */
+
 .cursor {
   display: inline-block;
-  width: 2px; height: 15px;
-  background: var(--accent);
+  width: 2px; height: 13px;
+  background: var(--bubble-label);
   margin-left: 2px;
   vertical-align: middle;
   animation: blink 0.7s step-end infinite;
 }
 @keyframes blink {
-  0%,100% { opacity: 1; }
-  50%      { opacity: 0; }
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
 }
 
-/* ── Action button ── */
-#action-wrap { padding: 0 16px 10px; flex-shrink: 0; }
+/* ── Copy button ─────────────────────────────────────────────────────────────── */
+
+#copy-btn {
+  display: block;
+  margin-top: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--bubble-dim);
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  transition: color 0.15s;
+  text-align: left;
+}
+#copy-btn:hover { color: var(--bubble-label); }
+#copy-btn.copied { color: var(--bubble-label); }
+
+/* ── Action button ───────────────────────────────────────────────────────────── */
+
+#action-wrap { margin-top: 8px; flex-shrink: 0; }
 #action-wrap.hidden { display: none; }
+
 #action-btn {
   width: 100%;
-  padding: 6px 12px;
+  padding: 5px 10px;
   background: transparent;
-  border: 1px solid var(--accent);
-  color: var(--accent);
+  border: 1px solid var(--bubble-label);
+  color: var(--bubble-label);
   border-radius: 4px;
   font-size: 11px;
+  font-family: var(--font-mono);
   letter-spacing: 0.05em;
   cursor: pointer;
   transition: background 0.15s;
 }
-#action-btn:hover { background: rgba(74, 222, 128, 0.1); }
+#action-btn:hover    { background: rgba(161,98,7,0.08); }
 #action-btn:disabled { opacity: 0.4; cursor: default; }
 
-/* ── Code quality proposal ── */
+/* ── Code quality proposal (inside bubble, replaces message) ─────────────────── */
+
 #proposal-wrap {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 0 16px 8px;
   overflow: hidden;
-  flex: 1;
 }
 
 #proposal-header {
   font-size: 10px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--bubble-label);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   flex-shrink: 0;
@@ -259,11 +292,12 @@ html, body {
   flex-direction: column;
   gap: 5px;
   min-height: 0;
+  max-height: 130px;
 }
 
 .proposal-file {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--border);
+  background: rgba(161,98,7,0.05);
+  border: 1px solid rgba(161,98,7,0.15);
   border-radius: 6px;
   overflow: hidden;
   flex-shrink: 0;
@@ -280,7 +314,7 @@ html, body {
 .proposal-file-name {
   font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--text-muted);
+  color: var(--bubble-muted);
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -289,19 +323,19 @@ html, body {
 
 .proposal-badge {
   font-size: 9px;
-  color: var(--text-dim);
+  color: var(--bubble-dim);
   flex-shrink: 0;
 }
 
 .proposal-removals {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid rgba(161,98,7,0.12);
   padding: 4px 8px;
 }
 
 .proposal-removal {
   font-family: var(--font-mono);
   font-size: 9px;
-  color: #f87171;
+  color: #dc2626;
   line-height: 1.7;
   white-space: nowrap;
   overflow: hidden;
@@ -313,7 +347,7 @@ html, body {
 .proposal-removal-more {
   font-family: var(--font-mono);
   font-size: 9px;
-  color: var(--text-dim);
+  color: var(--bubble-dim);
   line-height: 1.7;
 }
 
@@ -321,72 +355,100 @@ html, body {
   display: flex;
   gap: 6px;
   flex-shrink: 0;
+  margin-top: 4px;
 }
 
 #proposal-apply {
   flex: 1;
-  padding: 6px;
+  padding: 5px;
   background: transparent;
-  border: 1px solid var(--accent);
-  color: var(--accent);
+  border: 1px solid var(--bubble-label);
+  color: var(--bubble-label);
   border-radius: 4px;
   font-size: 11px;
   letter-spacing: 0.04em;
   cursor: pointer;
   transition: background 0.15s;
 }
-#proposal-apply:hover    { background: rgba(74, 222, 128, 0.1); }
+#proposal-apply:hover    { background: rgba(161,98,7,0.08); }
 #proposal-apply:disabled { opacity: 0.4; cursor: default; }
 
 #proposal-skip {
-  padding: 6px 10px;
+  padding: 5px 10px;
   background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text-muted);
+  border: 1px solid rgba(161,98,7,0.2);
+  color: var(--bubble-muted);
   border-radius: 4px;
   font-size: 11px;
   cursor: pointer;
   transition: border-color 0.15s;
 }
-#proposal-skip:hover { border-color: var(--border-hi); }
+#proposal-skip:hover { border-color: rgba(161,98,7,0.4); }
 
-/* ── Chat input ── */
+/* ── Chat input (inside bubble) ──────────────────────────────────────────────── */
+
 #chat-area {
   max-height: 0;
   overflow: hidden;
   transition: max-height 220ms ease-out;
-  padding: 0 16px;
-  flex-shrink: 0;
 }
-#chat-area.visible { max-height: 48px; }
+#chat-area.visible {
+  max-height: 38px;
+  margin-top: 8px;
+}
 
 #chat-input {
   width: 100%;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 8px;
-  color: var(--text);
+  background: rgba(161,98,7,0.06);
+  border: 1px solid rgba(161,98,7,0.2);
+  border-radius: 6px;
+  color: var(--bubble-text);
   font-size: 12px;
-  font-family: var(--font);
-  padding: 7px 10px;
+  font-family: var(--font-mono);
+  padding: 6px 10px;
   outline: none;
   transition: border-color 0.15s;
-  margin-bottom: 8px;
 }
-#chat-input:focus { border-color: var(--accent); }
-#chat-input::placeholder { color: var(--text-dim); }
-#chat-input:disabled { opacity: 0.4; cursor: not-allowed; }
+#chat-input:focus       { border-color: var(--bubble-label); }
+#chat-input::placeholder { color: var(--bubble-dim); }
+#chat-input:disabled    { opacity: 0.4; cursor: not-allowed; }
 
-/* pause countdown while user is interacting */
+/* Pause countdown while user is interacting */
 #popup.chatting #countdown-bar.draining {
   animation-play-state: paused;
 }
 
-/* ── Brainstorm mode ── */
-#popup.brainstorm #alfred-art { color: #60a5fa; } /* watching blue */
-#popup.brainstorm #chat-input { border-color: rgba(96, 165, 250, 0.35); }
-#popup.brainstorm #chat-input:focus { border-color: #60a5fa; }
-#popup.brainstorm #popup-badge { border-color: rgba(96, 165, 250, 0.4); }
+/* ── Alfred ASCII character ───────────────────────────────────────────────────── */
+
+#alfred-section {
+  flex-shrink: 0;
+  margin-left: 12px;
+  display: flex;
+  align-items: flex-end;
+}
+
+#alfred-art {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.2;
+  color: #4ade80;
+  text-align: center;
+  white-space: pre;
+  user-select: none;
+  transition: color 0.4s ease, opacity 0.4s ease;
+}
+
+#alfred-art.idle                  { opacity: 0.38; }
+#alfred-art[data-mood="roast"]    { color: #facc15; }
+#alfred-art[data-mood="alert"]    { color: #f87171; }
+#alfred-art[data-mood="watching"] { color: #60a5fa; }
+#alfred-art[data-mood="welcome"]  { color: #a78bfa; }
+
+/* ── Brainstorm mode ─────────────────────────────────────────────────────────── */
+
+#popup.brainstorm #alfred-art          { color: #60a5fa; }
+#popup.brainstorm #chat-input          { border-color: rgba(96, 165, 250, 0.35); }
+#popup.brainstorm #chat-input:focus    { border-color: #60a5fa; }
 #popup.brainstorm #popup-badge::after {
   content: ' · thinking';
   color: #60a5fa;
@@ -394,11 +456,12 @@ html, body {
   opacity: 0.8;
 }
 
-/* ── Countdown bar ── */
+/* ── Countdown bar ───────────────────────────────────────────────────────────── */
+
 #countdown-wrap {
   height: 3px;
   overflow: hidden;
-  margin-top: auto;
+  margin: 0 -16px; /* bleed to window edges past #popup padding */
   flex-shrink: 0;
 }
 
@@ -407,15 +470,15 @@ html, body {
   width: 100%;
   background: linear-gradient(
     90deg,
-    rgba(74,222,128,0.9) 0%,
-    rgba(74,222,128,0.5) 100%
+    rgba(161,98,7,0.7) 0%,
+    rgba(161,98,7,0.3) 100%
   );
   opacity: 0;
 }
 
 #countdown-bar.draining {
   opacity: 1;
-  animation: drain 10s linear forwards;
+  animation: drain 6s linear forwards;
 }
 
 #popup:hover #countdown-bar.draining {
@@ -424,5 +487,5 @@ html, body {
 
 @keyframes drain {
   from { width: 100%; }
-  to   { width: 0%; }
+  to   { width:   0%; }
 }

@@ -42,15 +42,13 @@ function createWindow() {
   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
 
   mainWindow = new BrowserWindow({
-    width: 320,
-    height: 340,      // includes Alfred ASCII character
-    x: width - 340,
-    y: height - 280,
+    width: 420,
+    height: 280,
+    x: width - 440,   // 420px wide + 20px right margin
+    y: height - 300,  // 280px tall + 20px bottom margin
     alwaysOnTop: true,
     frame: false,
     transparent: true,
-    vibrancy: 'under-window',
-    visualEffectState: 'active',
     resizable: false,
     show: false,      // hidden until there's something to say
     skipTaskbar: true,
@@ -418,8 +416,8 @@ function setupIPC() {
     }
     activeProjectId = project.id;
     db.setState('active_project_id', project.id);
-    // Resize to popup height after onboarding completes
-    mainWindow?.setSize(320, 340);
+    // Resize to popup dimensions after onboarding completes
+    mainWindow?.setSize(420, 280);
     return project;
   });
 
@@ -463,6 +461,13 @@ function setupIPC() {
         'main.js                    — orchestration: app lifecycle, IPC handlers, routes events to CheckInEngine',
         'renderer/app.js            — UI: renders Alfred\'s messages, handles chat/brainstorm state',
         'preload.js                 — IPC bridge between main and renderer',
+        '',
+        'Electron IPC pattern: a function defined once in main.js may appear in multiple files without being duplicated.',
+        '  - main.js defines it (e.g. function showWindow())',
+        '  - main.js registers it as an IPC handler (ipcMain.handle)',
+        '  - preload.js bridges it to the renderer (ipcRenderer.invoke)',
+        '  - services receive it via dependency injection (constructor args)',
+        'Seeing a name in 3 files does NOT mean it lives in 3 places. Check for "function X()" to find the single definition.',
       ].join('\n');
       let fullResponse = '';
       await aiCharacter.respondBrainstorm({

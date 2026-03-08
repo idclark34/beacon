@@ -33,33 +33,51 @@
 
     <!-- Popup (the main experience) -->
     <div id="popup" class="screen hidden">
-      <div id="popup-top">
-        <div id="popup-badge"><span id="popup-dot"></span>OC</div>
-        <button id="popup-dismiss" title="Dismiss">×</button>
-      </div>
-      <div id="alfred-section">
-        <pre id="alfred-art"></pre>
-      </div>
-      <div id="popup-message">
-        <span id="popup-text"></span><span id="popup-cursor" class="cursor hidden"></span>
-      </div>
-      <div id="action-wrap" class="hidden">
-        <button id="action-btn">Fix it →</button>
-      </div>
+      <div id="popup-layout">
 
-      <!-- Code quality proposal panel -->
-      <div id="proposal-wrap" class="hidden">
-        <div id="proposal-header">Proposed cleanup</div>
-        <div id="proposal-files"></div>
-        <div id="proposal-btns">
-          <button id="proposal-apply">Apply selected</button>
-          <button id="proposal-skip">Skip all</button>
+        <!-- Speech bubble (left) -->
+        <div id="bubble">
+          <div id="popup-top">
+            <div id="popup-badge"><span id="popup-dot"></span>OC</div>
+            <button id="popup-dismiss" title="Dismiss">×</button>
+          </div>
+
+          <!-- Observation message -->
+          <div id="popup-message">
+            <span id="popup-text"></span><span id="popup-cursor" class="cursor hidden"></span>
+          </div>
+          <button id="copy-btn" class="hidden" title="Copy to clipboard">copy</button>
+
+          <!-- Code quality proposal panel — replaces message when active -->
+          <div id="proposal-wrap" class="hidden">
+            <div id="proposal-header">Proposed cleanup</div>
+            <div id="proposal-files"></div>
+            <div id="proposal-btns">
+              <button id="proposal-apply">Apply selected</button>
+              <button id="proposal-skip">Skip all</button>
+            </div>
+          </div>
+
+          <!-- Action button -->
+          <div id="action-wrap" class="hidden">
+            <button id="action-btn">Fix it →</button>
+          </div>
+
+          <!-- Chat input -->
+          <div id="chat-area">
+            <input id="chat-input" type="text" placeholder="say something…"
+                   maxlength="300" autocomplete="off" spellcheck="false" />
+          </div>
+
+          <!-- Right-pointing triangle toward Alfred -->
+          <div id="bubble-pointer"></div>
         </div>
-      </div>
 
-      <div id="chat-area">
-        <input id="chat-input" type="text" placeholder="say something…"
-               maxlength="300" autocomplete="off" spellcheck="false" />
+        <!-- Alfred ASCII character (right) -->
+        <div id="alfred-section">
+          <pre id="alfred-art"></pre>
+        </div>
+
       </div>
       <div id="countdown-wrap"><div id="countdown-bar"></div></div>
     </div>
