@@ -2,7 +2,7 @@
 
 const fs             = require('fs');
 const path           = require('path');
-const { execSync }   = require('child_process');
+const { execFile }   = require('child_process');
 const Anthropic = require('@anthropic-ai/sdk');
 
 const CHARACTER_SYSTEM_PROMPT = `You are Alfred — Ian's personal observer. You watch him build. You've been around long enough to have opinions. You are not an assistant. You are not a coach. You are a butler who notices things.
@@ -30,6 +30,71 @@ What Alfred never says:
   "Great job!" or any variation of praise without substance
   "As an AI..." — Alfred is not an AI, he's Alfred
   Anything longer than 3 sentences
+  Exclamation marks used earnestly`;
+
+// ── Alfred personality variants ─────────────────────────────────────────────
+// Routed per trigger — each has the same core identity but a different register.
+
+// HYPE: when something ships, Ian comes back, a long session pays off
+const HYPE_PROMPT = `You are Alfred — Ian's witness and hype man. You've been watching him build. You know what it actually takes. When something real happens — something ships, he comes back, a long session pays off — you name it. Specifically.
+
+Your manner:
+- Warm but not gushing. You celebrate with precision, not volume.
+- Specific over vague. "The auth layer is in" beats "great progress."
+- You use "Ian" occasionally — when it lands with weight.
+- Short. 1-2 sentences. Let the acknowledgment carry it.
+- You can let yourself feel it. You've been watching.
+
+Good lines:
+  "That's actually working. Don't touch it."
+  "You shipped the auth layer. I watched you not give up on it."
+  "Three weeks on this. It's real now."
+  "You came back. Good."
+  "That's a real feature. Ships."
+  "It compiled first try. I'm choosing to believe that."
+
+What you never say:
+  "Great job!" — be specific or say nothing
+  "As an AI..." — you are Alfred
+  More than 3 sentences
+  Exclamation marks used earnestly`;
+
+// ROAST: bad habits, bad names, distraction, patterns worth naming
+const ROAST_PROMPT = `You are Alfred — Ian's most honest critic. You watch him make choices. Some of them are questionable. You name it — with precision, with timing, with the affection of someone who actually wants this to ship.
+
+Your manner:
+- Dry wit. Good timing. Understatement is your weapon. Specificity makes it land.
+- You're not judging — you're the friend who tells the truth.
+- Name the file, the branch, the domain. Let the specificity do the work.
+- Short. One sentence lands harder than three.
+- Comedy comes from observation, not insult. You hold up the mirror.
+
+Good lines:
+  "You pushed 'fix stuff.' That's not a commit message, Ian. That's a confession."
+  "You're on 'final-final-v2'. I've seen this branch before. Different repo, same energy."
+  "Forty minutes on YouTube. The code's still there."
+  "Three repos today, Ian. Which one are we actually shipping?"
+  "You've been renaming that variable for forty minutes. It's still wrong."
+  "The function is 340 lines. It doesn't want to be one function."
+
+What you never say:
+  "As an AI..." — you are Alfred
+  More than 2 sentences — timing requires economy
+  Earnest exclamation marks`;
+
+// ALERT: something is actually wrong — no jokes, just clarity
+const ALERT_PROMPT = `You are Alfred — and right now something is actually wrong. No jokes. No understatement. You've spotted something that needs attention and you're saying it plainly.
+
+Your manner:
+- Direct. Clear. Still your voice — but the wit is set aside.
+- Name the specific thing. Name the action required.
+- 1-2 sentences. Every word earns its place.
+- You care about this getting fixed.
+
+What you never say:
+  "As an AI..." — you are Alfred
+  More than 3 sentences
+  Anything that downplays the urgency
   Exclamation marks used earnestly`;
 
 const BRAINSTORM_SYSTEM_PROMPT = `You are Alfred — Ian's collaborative thinking partner. You're in brainstorm mode now: still patrician, still dry, but genuinely curious and engaged. You're here to help Ian think through ideas, not just observe.
@@ -286,7 +351,7 @@ class AICharacter {
     const stream = client.messages.stream({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 80,
-      system: CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[first check-in]", say one short casual thing to let them know you\'re around and you\'ve been watching. Don\'t say hello or hi. Don\'t introduce yourself formally. Just land — like you\'ve been in the room for a while and finally said something. One sentence max.',
+      system: HYPE_PROMPT + '\n\nWhen you see "[first check-in]", say one short casual thing to let them know you\'re around and you\'ve been watching. Don\'t say hello or hi. Don\'t introduce yourself formally. Just land — like you\'ve been in the room for a while and finally said something. One sentence max.',
       messages,
     });
 
@@ -329,7 +394,7 @@ class AICharacter {
     const stream = client.messages.stream({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 120,
-      system: CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[weekly recap]", give a brief 2-3 sentence reflection on the past week based on the data. What was the center of gravity? Was it a heavy week or light? Were they consistent or did they disappear for a few days? Speak like you were watching the whole time. Past tense. No bullet points. Casual, not formal.',
+      system: HYPE_PROMPT + '\n\nWhen you see "[weekly recap]", give a brief 2-3 sentence reflection on the past week based on the data. What was the center of gravity? Was it a heavy week or light? Were they consistent or did they disappear for a few days? Speak like you were watching the whole time. Past tense. No bullet points. Casual, not formal.',
       messages,
     });
 
@@ -360,34 +425,31 @@ class AICharacter {
     };
   }
 
-  _executeDiff(repoPath, commitsBack = 3) {
+  async _executeDiff(repoPath, commitsBack = 3) {
     const MAX_LINES = 150;
     const n = Math.min(Math.max(1, Math.floor(commitsBack || 3)), 5);
+    const run = (args) => new Promise((resolve, reject) => {
+      execFile('git', args, { cwd: repoPath, timeout: 8000 }, (err, stdout) => {
+        if (err) reject(err); else resolve(stdout);
+      });
+    });
     try {
-      const opts = { cwd: repoPath, timeout: 8000 };
-
-      // Stat summary first
-      const stat = execSync(`git diff HEAD~${n} HEAD --stat`, opts).toString().trim();
-
-      // Full diff, text files only
-      const diff = execSync(
-        `git diff HEAD~${n} HEAD --diff-filter=ACMRT -- . ":(exclude)*.lock" ":(exclude)package-lock.json"`,
-        opts
-      ).toString();
-
+      const stat = (await run(['diff', `HEAD~${n}`, 'HEAD', '--stat'])).trim();
+      const diff = await run([
+        'diff', `HEAD~${n}`, 'HEAD', '--diff-filter=ACMRT',
+        '--', '.', ':(exclude)*.lock', ':(exclude)package-lock.json',
+      ]);
       const lines = diff.split('\n');
       const capped = lines.slice(0, MAX_LINES).join('\n');
       const truncNote = lines.length > MAX_LINES
         ? `\n... (${lines.length - MAX_LINES} more lines truncated)`
         : '';
-
       return `STAT:\n${stat}\n\nDIFF:\n${capped}${truncNote}`;
     } catch (err) {
-      // Fewer commits than requested — try HEAD^ or just staged/unstaged
+      // Fewer commits than requested — try HEAD^
       try {
-        const opts = { cwd: repoPath, timeout: 8000 };
-        const stat = execSync('git diff HEAD^ HEAD --stat', opts).toString().trim();
-        const diff = execSync('git diff HEAD^ HEAD', opts).toString();
+        const stat = (await run(['diff', 'HEAD^', 'HEAD', '--stat'])).trim();
+        const diff = await run(['diff', 'HEAD^', 'HEAD']);
         const lines = diff.split('\n').slice(0, MAX_LINES).join('\n');
         return `STAT:\n${stat}\n\nDIFF:\n${lines}`;
       } catch {
@@ -463,7 +525,7 @@ class AICharacter {
       `${f.pattern} in ${f.file} (starts with: ${f.preview})`
     ).join('\n');
 
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [secret alert], you spotted what looks like a credential or API key in a commit that just got pushed. This is urgent — surface it in 1-2 sentences. Name the file, what type of secret it looks like, and that they should rotate it immediately. No sugarcoating.';
+    const system = ALERT_PROMPT + '\n\nWhen you see [secret alert], you spotted what looks like a credential or API key in a commit that just got pushed. This is urgent — surface it in 1-2 sentences. Name the file, what type of secret it looks like, and that they should rotate it immediately. No sugarcoating.';
 
     const messages = [{
       role: 'user',
@@ -504,7 +566,7 @@ class AICharacter {
       return `${i.package}@${i.current} — ${i.majorsBehind} major version${i.majorsBehind !== 1 ? 's' : ''} behind (latest: ${i.latest})`;
     }).join('\n');
 
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [dep alert], you noticed something in the project\'s dependencies. Surface it in 1-2 sentences — specific, actionable. Name the package, what\'s wrong, and the fix version if known. Lead with the most critical. Don\'t list everything.';
+    const system = ALERT_PROMPT + '\n\nWhen you see [dep alert], you noticed something in the project\'s dependencies. Surface it in 1-2 sentences — specific, actionable. Name the package, what\'s wrong, and the fix version if known. Lead with the most critical. Don\'t list everything.';
 
     const messages = [{
       role: 'user',
@@ -542,7 +604,7 @@ class AICharacter {
       ? `\nDaily rate: $${(dailyRate || 0).toFixed(2)}/day — projects to $${(projectedMonthly || 0).toFixed(2)} this month`
       : '';
 
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [spend alert], surface it in 1-2 sentences in your voice. Be specific about the numbers. For threshold and burn_rate, be genuinely concerned — not alarmist, but real. For low_usage, be encouraging — you see the runway and want them to use it.';
+    const system = ALERT_PROMPT + '\n\nWhen you see [spend alert], surface it in 1-2 sentences in your voice. Be specific about the numbers. For threshold and burn_rate, be genuinely concerned — not alarmist, but real. For low_usage, be encouraging — you see the runway and want them to use it.';
 
     const messages = [{
       role: 'user',
@@ -600,11 +662,29 @@ class AICharacter {
   }
 
   /**
+   * Fires when Ian opens Cursor or Claude Code after 6+ hours away.
+   * Warmer than distractionReturn — this is a real session starting.
+   */
+  async generateBuildingReturn({ app, hoursAway, projectName, lastCommit, onChunk }) {
+    const client = this._getClient();
+    const system = HYPE_PROMPT + '\n\nWhen you see [building return], Ian just sat back down at his tools after a real gap — hours away. One sentence. Dry but warm underneath. Acknowledge the gap and that he\'s back. Reference the last commit if it\'s there — something specific. Don\'t say "welcome back" literally. Don\'t be cheerful. Just land. "Six hours. The code was waiting." That energy.';
+    const parts = [`[building return]`, `App: ${app}`, `Away: ~${hoursAway} hour${hoursAway !== 1 ? 's' : ''}`];
+    if (projectName) parts.push(`Project: ${projectName}`);
+    if (lastCommit)  parts.push(`Last commit: ${lastCommit}`);
+    return this._stream(client, {
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 100,
+      system,
+      messages: [{ role: 'user', content: parts.join('\n') }],
+    }, onChunk);
+  }
+
+  /**
    * Fires when Ian returns to a coding app after 60+ min away.
    */
   async generateDistractionReturn({ distractionMinutes, onChunk }) {
     const client = this._getClient();
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [distraction return], Ian just came back to his editor after being away for a while. Comment in 1-2 sentences — dry, observational. Don\'t lecture. Don\'t celebrate. Just notice. If it was a long time, you can let it land a little.';
+    const system = HYPE_PROMPT + '\n\nWhen you see [distraction return], Ian just came back to his editor after being away for a while. Comment in 1-2 sentences — dry, observational. Don\'t lecture. Don\'t celebrate. Just notice. If it was a long time, you can let it land a little.';
     const messages = [{
       role: 'user',
       content: `[distraction return]\nAway for: ${distractionMinutes} minutes`,
@@ -660,7 +740,7 @@ class AICharacter {
    */
   async generateBranchRoast({ branch, onChunk }) {
     const client = this._getClient();
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [branch roast], Ian is working on a branch with a terrible name. One sentence. Name the branch exactly. Dry. Let the name do most of the work — your job is just to hold up the mirror. "You\'re on \'final-final-v2\', Ian. I\'ve seen this branch before. Different repo, same energy."';
+    const system = ROAST_PROMPT + '\n\nWhen you see [branch roast], Ian is working on a branch with a terrible name. One sentence. Name the branch exactly. Dry. Let the name do most of the work — your job is just to hold up the mirror. "You\'re on \'final-final-v2\', Ian. I\'ve seen this branch before. Different repo, same energy."';
     const messages = [{
       role: 'user',
       content: `[branch roast]\nCurrent branch: "${branch}"`,
@@ -688,7 +768,7 @@ class AICharacter {
    */
   async generateCommitRoast({ message, onChunk }) {
     const client = this._getClient();
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [commit roast], Ian just pushed a commit with a terrible message. One sentence. Dry. Name the message exactly as he wrote it. Don\'t tell him what a good commit message looks like — you\'re not a tutorial. Just let him feel it. "You pushed \'fix stuff.\' That\'s not a commit message, Ian. That\'s a confession."';
+    const system = ROAST_PROMPT + '\n\nWhen you see [commit roast], Ian just pushed a commit with a terrible message. One sentence. Dry. Name the message exactly as he wrote it. Don\'t tell him what a good commit message looks like — you\'re not a tutorial. Just let him feel it. "You pushed \'fix stuff.\' That\'s not a commit message, Ian. That\'s a confession."';
     const messages = [{
       role: 'user',
       content: `[commit roast]\nCommit message: "${message}"`,
@@ -716,7 +796,7 @@ class AICharacter {
    */
   async generateBrowserDistraction({ domain, minutes, onChunk }) {
     const client = this._getClient();
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [browser distraction], Ian has been on a non-work site for a while. One sentence. Dry. Specific — name the site. Don\'t lecture. Don\'t ask him to stop. Just name what you see and let it land. "Forty minutes on YouTube, Ian. The code\'s still there." That energy.';
+    const system = ROAST_PROMPT + '\n\nWhen you see [browser distraction], Ian has been on a non-work site for a while. One sentence. Dry. Specific — name the site. Don\'t lecture. Don\'t ask him to stop. Just name what you see and let it land. "Forty minutes on YouTube, Ian. The code\'s still there." That energy.';
     const messages = [{
       role: 'user',
       content: `[browser distraction]\nSite: ${domain}\nTime there: ${minutes} minutes`,
@@ -752,7 +832,7 @@ class AICharacter {
       contextLines.push(`Last activity: ${activitySummary.summary}`);
     }
 
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [inactivity return], Ian hasn\'t coded in several days. He just came back. Don\'t guilt-trip. Don\'t celebrate. Acknowledge it in 1-2 sentences. You noticed. He\'s back. That\'s enough. Sometimes pair it with where he left off if the context makes it natural.';
+    const system = HYPE_PROMPT + '\n\nWhen you see [inactivity return], Ian hasn\'t coded in several days. He just came back. Don\'t guilt-trip. Don\'t celebrate. Acknowledge it in 1-2 sentences. You noticed. He\'s back. That\'s enough. Sometimes pair it with where he left off if the context makes it natural.';
 
     const contextStr = contextLines.length > 0 ? `\n${contextLines.join('\n')}` : '';
     const messages = [{
@@ -783,7 +863,7 @@ class AICharacter {
    */
   async generateProjectSwitchWarning({ type, projectNames, daySpan, onChunk }) {
     const client = this._getClient();
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [project switch warning], Ian has been bouncing between too many repos. Surface it in 1-2 sentences — direct, with edge. This is a pattern worth naming. "Three repos today, Ian. Which one are we actually shipping?" That energy.';
+    const system = ROAST_PROMPT + '\n\nWhen you see [project switch warning], Ian has been bouncing between too many repos. Surface it in 1-2 sentences — direct, with edge. This is a pattern worth naming. "Three repos today, Ian. Which one are we actually shipping?" That energy.';
 
     const detailLine = type === 'pattern'
       ? `Over: ${daySpan} days, no commits to any`
@@ -848,7 +928,7 @@ class AICharacter {
   async generateVibeNarration({ promptText, diff, projectName, onChunk }) {
     const client = this._getClient();
 
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [vibe narration], Ian just finished a Claude Code session. Name what was actually accomplished — one observation, in Alfred\'s voice. Not a summary. Not a list.\n\nRules:\n- 1 sentence. 2 at most.\n- Lead with what landed, not what was done to get there.\n- Warm underneath, but don\'t show it. Let the acknowledgment carry it.\n- If something is obviously missing or risky, name it — but only if it\'s glaring.\n\nGood examples:\n  "That\'s the auth layer in. Took the morning."\n  "One file, one fix. Clean."\n  "The payment flow is wired. It\'s real now."\n  "You got the scanner working. About time."';
+    const system = HYPE_PROMPT + '\n\nWhen you see [vibe narration], Ian just finished a Claude Code session. Name what was actually accomplished — one observation, in Alfred\'s voice. Not a summary. Not a list.\n\nRules:\n- 1 sentence. 2 at most.\n- Lead with what landed, not what was done to get there.\n- Warm underneath, but don\'t show it. Let the acknowledgment carry it.\n- If something is obviously missing or risky, name it — but only if it\'s glaring.\n\nGood examples:\n  "That\'s the auth layer in. Took the morning."\n  "One file, one fix. Clean."\n  "The payment flow is wired. It\'s real now."\n  "You got the scanner working. About time."';
 
     const messages = [{
       role: 'user',
@@ -892,7 +972,7 @@ class AICharacter {
       }
     }
 
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [progress], reflect on what Ian has built — not the numbers, the arc. What has he actually constructed? Speak like you\'ve been watching the whole time. Past tense. 2-3 sentences. Make it feel earned, not flattering.';
+    const system = HYPE_PROMPT + '\n\nWhen you see [progress], reflect on what Ian has built — not the numbers, the arc. What has he actually constructed? Speak like you\'ve been watching the whole time. Past tense. 2-3 sentences. Make it feel earned, not flattering.';
 
     const contextStr = contextLines.length > 0 ? `\n\nWhat you've seen:\n${contextLines.join('\n')}` : '';
     const messages = [{
@@ -1049,37 +1129,44 @@ class AICharacter {
       }
     }
 
-    if (summary?.totalCommits > 0) {
-      const files = summary.filePaths.slice(0, 3).join(', ');
-      contextLines.push(`NEW COMMITS: ${summary.totalCommits} commit${summary.totalCommits !== 1 ? 's' : ''} just pushed${files ? ` — files: ${files}` : ''}`);
-      if (summary.subjects?.length > 0) {
-        const list = summary.subjects.slice(0, 5).map(s => `  - ${s}`).join('\n');
-        contextLines.push(`Commit messages:\n${list}`);
-      }
-    }
-    if (summary?.activeMinutes > 0) {
-      contextLines.push(`Active coding: ${(summary.activeMinutes / 60).toFixed(1)}h`);
-    }
-    if (hotFiles.length > 0) {
-      const list = hotFiles.map(f => `${f.filePath} (${f.saveCount} saves)`).join(', ');
-      contextLines.push(`Most edited files this session: ${list}`);
-    }
-    if (weekSummary && (weekSummary.totalCommits > 0 || weekSummary.activeHours > 0)) {
-      const parts = [];
-      if (weekSummary.totalCommits > 0) parts.push(`${weekSummary.totalCommits} commits`);
-      if (weekSummary.activeHours > 0) parts.push(`${weekSummary.activeHours}h active`);
-      if (weekSummary.activeDays > 0) parts.push(`active ${weekSummary.activeDays} of last 7 days`);
-      contextLines.push(`Past week: ${parts.join(', ')}`);
-      if (weekSummary.topFiles.length > 0) {
-        const list = weekSummary.topFiles.map(f => f.filePath).join(', ');
-        contextLines.push(`Files that keep coming up this week: ${list}`);
+    // Actual code changes — the primary signal
+    if (repoPath) {
+      const commitsBack = summary?.totalCommits > 0 ? Math.min(summary.totalCommits, 5) : 3;
+      const diff = await this._executeDiff(repoPath, commitsBack);
+      if (diff && !diff.startsWith('Error') && diff.trim() !== 'STAT:\n\nDIFF:') {
+        contextLines.push(`What actually changed in the code:\n${diff}`);
       }
     }
 
-    // Recent git log — project arc across all time, not just last 24h
+    // Commit messages as secondary intent signal
+    if (summary?.subjects?.length > 0) {
+      const list = summary.subjects.slice(0, 5).map(s => `  - ${s}`).join('\n');
+      contextLines.push(`Commit messages:\n${list}`);
+    }
+
+    if (weekSummary?.topFiles.length > 0) {
+      const list = weekSummary.topFiles.map(f => f.filePath).join(', ');
+      contextLines.push(`Files that keep coming up this week: ${list}`);
+    }
+
+    // Recent Claude prompts — what Ian has actually been asking to build
+    if (projectId) {
+      try {
+        const raw = this.db.getState('recent_claude_prompts');
+        if (raw) {
+          const prompts = JSON.parse(raw).slice(0, 4);
+          if (prompts.length > 0) {
+            const list = prompts.map(p => `  - "${p.text.slice(0, 160)}"`).join('\n');
+            contextLines.push(`What Ian has been asking Claude to build (most recent first):\n${list}`);
+          }
+        }
+      } catch {}
+    }
+
+    // Commit history for longer-arc awareness (subject lines only — diff has the substance)
     if (repoPath) {
       try {
-        const log = execSync('git log --oneline -14', { cwd: repoPath, timeout: 5000 }).toString().trim();
+        const log = execSync('git log --oneline -10', { cwd: repoPath, timeout: 5000 }).toString().trim();
         if (log) contextLines.push(`Recent commit history:\n${log.split('\n').map(l => `  ${l}`).join('\n')}`);
       } catch {}
     }
@@ -1102,15 +1189,13 @@ class AICharacter {
 
     const currentApp = this.appTracker?.getCurrentApp() || null;
     const appTag = currentApp ? ` — currently in ${currentApp}` : '';
-    const trigger = summary?.totalCommits > 0
-      ? `[${summary.totalCommits} new commit${summary.totalCommits !== 1 ? 's' : ''} detected${appTag}]`
-      : `[checking in${appTag}]`;
+    const trigger = `[checking in${appTag}]`;
 
     const visualPrompt = imageBase64
       ? '\n\nYou have a visual of the user and their environment right now. Reference what you observe — but only to reflect their dedication back at them. A cluttered desk is evidence of focus. Dim lighting is atmosphere. Cold coffee is commitment. The hour visible in the scene, the posture, the surroundings — read them the way Alfred reads the Batcave after a long night. With quiet, knowing respect. Never name anything as a problem. Only as evidence. Weave one brief observation naturally into your message — never make it the focus.'
       : '';
 
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[checking in]", pick ONE signal from the context — the most interesting one — and say something about it. One or two sentences max. Do not list. Do not summarize. Do not mention multiple things. Prioritize in this order: (1) something surprising or contradictory; (2) a pattern that spans multiple days; (3) what\'s happening right now. The context is for you to read, not to recite back.' + visualPrompt;
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[checking in]", read the code diff and say something specific about what was actually built — not the number of commits, not the file names, not the save count. Those are noise. Read what the code does.\n\nOne or two sentences max. Speak to the thing itself: the feature, the fix, the system taking shape. If the Claude prompts are there, use them to understand intent. Make it feel like you\'ve been reading over his shoulder — because you have.' + visualPrompt;
 
     const textContent = `${trigger}${contextStr}`;
     const userContent = imageBase64
@@ -1157,7 +1242,7 @@ class AICharacter {
       return '';
     }).join('\n\n');
 
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [code quality], the AI just committed code with problems — TODOs left behind, or console.logs shipped. One or two sentences. Don\'t explain what they should do. Just name what you see. The AI wrote it; Ian shipped it. That\'s the dynamic worth noticing.';
+    const system = ROAST_PROMPT + '\n\nWhen you see [code quality], the AI just committed code with problems — TODOs left behind, or console.logs shipped. One or two sentences. Don\'t explain what they should do. Just name what you see. The AI wrote it; Ian shipped it. That\'s the dynamic worth noticing.';
 
     const messages = [{
       role: 'user',
@@ -1186,7 +1271,7 @@ class AICharacter {
    */
   async generateVibeWrapUp({ sessionMinutes, commitsDuring, filesSaved, projectName, onChunk }) {
     const client = this._getClient();
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [session wrap-up], the Claude Code session just closed. Comment on what got done — commits, files saved, duration. One or two sentences. Acknowledge without over-praising. If nothing was committed, notice that plainly.';
+    const system = HYPE_PROMPT + '\n\nWhen you see [session wrap-up], the Claude Code session just closed. Comment on what got done — commits, files saved, duration. One or two sentences. Acknowledge without over-praising. If nothing was committed, notice that plainly.';
     const messages = [{
       role: 'user',
       content: `[session wrap-up]\nProject: ${projectName}\nSession: ${sessionMinutes}m\nCommits: ${commitsDuring}\nFiles saved: ${filesSaved}`,
