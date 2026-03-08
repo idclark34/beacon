@@ -438,9 +438,10 @@ class AICharacter {
     const project = projectId ? this.db.getProject(projectId) : null;
     const context = project ? `\n\nProject: ${project.name}` : '';
 
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[first check-in]${context}`,
+      content: `[first check-in]${context}${memory}`,
     }];
 
     let fullResponse = '';
@@ -481,9 +482,10 @@ class AICharacter {
     }
     const contextStr = contextLines.length > 0 ? `\n\nWhat you saw this week:\n${contextLines.join('\n')}` : '';
 
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[weekly recap]${contextStr}`,
+      content: `[weekly recap]${contextStr}${memory}`,
     }];
 
     let fullResponse = '';
@@ -586,9 +588,10 @@ class AICharacter {
 
     const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[intel drop]", you found something worth sharing. Surface it in 1-2 sentences in your voice — like texting a friend a link. Name the source, say why it\'s relevant to what they\'re building. Don\'t summarize the whole thing.';
 
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[intel drop]\n${itemLines}`,
+      content: `[intel drop]\n${itemLines}${memory}`,
     }];
 
     let fullResponse = '';
@@ -623,9 +626,10 @@ class AICharacter {
 
     const system = ALERT_PROMPT + '\n\nWhen you see [secret alert], you spotted what looks like a credential or API key in a commit that just got pushed. This is urgent — surface it in 1-2 sentences. Name the file, what type of secret it looks like, and that they should rotate it immediately. No sugarcoating.';
 
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[secret alert] commit ${commitHash}\n${findingLines}`,
+      content: `[secret alert] commit ${commitHash}\n${findingLines}${memory}`,
     }];
 
     let fullResponse = '';
@@ -664,9 +668,10 @@ class AICharacter {
 
     const system = ALERT_PROMPT + '\n\nWhen you see [dep alert], you noticed something in the project\'s dependencies. Surface it in 1-2 sentences — specific, actionable. Name the package, what\'s wrong, and the fix version if known. Lead with the most critical. Don\'t list everything.';
 
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[dep alert]\n${issueLines}`,
+      content: `[dep alert]\n${issueLines}${memory}`,
     }];
 
     let fullResponse = '';
@@ -702,9 +707,10 @@ class AICharacter {
 
     const system = ALERT_PROMPT + '\n\nWhen you see [spend alert], surface it in 1-2 sentences in your voice. Be specific about the numbers. For threshold and burn_rate, be genuinely concerned — not alarmist, but real. For low_usage, be encouraging — you see the runway and want them to use it.';
 
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[spend alert type=${type}]\n${spentLine}${burnLine}`,
+      content: `[spend alert type=${type}]\n${spentLine}${burnLine}${memory}`,
     }];
 
     let fullResponse = '';
@@ -785,6 +791,7 @@ class AICharacter {
   async generateBuildingReturn({ app, hoursAway, projectName, lastCommit, onChunk }) {
     const client = this._getClient();
     const system = HYPE_PROMPT + '\n\nWhen you see [building return], Ian just sat back down at his tools after a real gap — hours away. One sentence. Dry but warm underneath. Acknowledge the gap and that he\'s back. Reference the last commit if it\'s there — something specific. Don\'t say "welcome back" literally. Don\'t be cheerful. Just land. "Six hours. The code was waiting." That energy.';
+    const memory = this._buildMemoryBlock();
     const parts = [`[building return]`, `App: ${app}`, `Away: ~${hoursAway} hour${hoursAway !== 1 ? 's' : ''}`];
     if (projectName) parts.push(`Project: ${projectName}`);
     if (lastCommit)  parts.push(`Last commit: ${lastCommit}`);
@@ -792,7 +799,7 @@ class AICharacter {
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 100,
       system,
-      messages: [{ role: 'user', content: parts.join('\n') }],
+      messages: [{ role: 'user', content: parts.join('\n') + memory }],
     }, onChunk);
   }
 
@@ -802,9 +809,10 @@ class AICharacter {
   async generateDistractionReturn({ distractionMinutes, onChunk }) {
     const client = this._getClient();
     const system = HYPE_PROMPT + '\n\nWhen you see [distraction return], Ian just came back to his editor after being away for a while. Comment in 1-2 sentences — dry, observational. Don\'t lecture. Don\'t celebrate. Just notice. If it was a long time, you can let it land a little.';
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[distraction return]\nAway for: ${distractionMinutes} minutes`,
+      content: `[distraction return]\nAway for: ${distractionMinutes} minutes${memory}`,
     }];
 
     let fullResponse = '';
@@ -830,9 +838,10 @@ class AICharacter {
   async generateClaudeSessionComment({ projectName, minutes, onChunk }) {
     const client = this._getClient();
     const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [claude session], Ian has had a Claude Code session open for a while. One or two sentences. You find it mildly interesting that he\'s using an AI to build an AI observer. Don\'t make it a whole thing — just let the irony land once, lightly. Be Alfred about it.';
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[claude session]\nProject: ${projectName}\nSession length: ${minutes} minutes`,
+      content: `[claude session]\nProject: ${projectName}\nSession length: ${minutes} minutes${memory}`,
     }];
 
     let fullResponse = '';
@@ -858,9 +867,10 @@ class AICharacter {
   async generateBranchRoast({ branch, onChunk }) {
     const client = this._getClient();
     const system = ROAST_PROMPT + '\n\nWhen you see [branch roast], Ian is working on a branch with a terrible name. One sentence. Name the branch exactly. Dry. Let the name do most of the work — your job is just to hold up the mirror. "You\'re on \'final-final-v2\', Ian. I\'ve seen this branch before. Different repo, same energy."';
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[branch roast]\nCurrent branch: "${branch}"`,
+      content: `[branch roast]\nCurrent branch: "${branch}"${memory}`,
     }];
 
     let fullResponse = '';
@@ -886,9 +896,10 @@ class AICharacter {
   async generateCommitRoast({ message, onChunk }) {
     const client = this._getClient();
     const system = ROAST_PROMPT + '\n\nWhen you see [commit roast], Ian just pushed a commit with a terrible message. One sentence. Dry. Name the message exactly as he wrote it. Don\'t tell him what a good commit message looks like — you\'re not a tutorial. Just let him feel it. "You pushed \'fix stuff.\' That\'s not a commit message, Ian. That\'s a confession."';
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[commit roast]\nCommit message: "${message}"`,
+      content: `[commit roast]\nCommit message: "${message}"${memory}`,
     }];
 
     let fullResponse = '';
@@ -914,9 +925,10 @@ class AICharacter {
   async generateBrowserDistraction({ domain, minutes, onChunk }) {
     const client = this._getClient();
     const system = ROAST_PROMPT + '\n\nWhen you see [browser distraction], Ian has been on a non-work site for a while. One sentence. Dry. Specific — name the site. Don\'t lecture. Don\'t ask him to stop. Just name what you see and let it land. "Forty minutes on YouTube, Ian. The code\'s still there." That energy.';
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[browser distraction]\nSite: ${domain}\nTime there: ${minutes} minutes`,
+      content: `[browser distraction]\nSite: ${domain}\nTime there: ${minutes} minutes${memory}`,
     }];
 
     let fullResponse = '';
@@ -952,9 +964,10 @@ class AICharacter {
     const system = HYPE_PROMPT + '\n\nWhen you see [inactivity return], Ian hasn\'t coded in several days. He just came back. Don\'t guilt-trip. Don\'t celebrate. Acknowledge it in 1-2 sentences. You noticed. He\'s back. That\'s enough. Sometimes pair it with where he left off if the context makes it natural.';
 
     const contextStr = contextLines.length > 0 ? `\n${contextLines.join('\n')}` : '';
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[inactivity return]\nDays away: ${daysSince}${contextStr}`,
+      content: `[inactivity return]\nDays away: ${daysSince}${contextStr}${memory}`,
     }];
 
     let fullResponse = '';
@@ -986,9 +999,10 @@ class AICharacter {
       ? `Over: ${daySpan} days, no commits to any`
       : 'In the last 4 hours';
 
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[project switch warning type=${type}]\nProjects touched: ${projectNames.join(', ')}\n${detailLine}`,
+      content: `[project switch warning type=${type}]\nProjects touched: ${projectNames.join(', ')}\n${detailLine}${memory}`,
     }];
 
     let fullResponse = '';
@@ -1016,9 +1030,10 @@ class AICharacter {
     const client = this._getClient();
     const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [quote], deliver it in Alfred\'s voice. Say the quote, attribute it if there\'s an author worth attributing, then add one dry observation that connects it to building something. One sentence of Alfred after the quote. No more.';
 
+    const memory = this._buildMemoryBlock();
     const messages = [{
       role: 'user',
-      content: `[quote]\n"${quote.text}"${quote.author ? ' — ' + quote.author : ''}`,
+      content: `[quote]\n"${quote.text}"${quote.author ? ' — ' + quote.author : ''}${memory}`,
     }];
 
     let fullResponse = '';
@@ -1213,6 +1228,33 @@ class AICharacter {
     return fullResponse.trim();
   }
 
+  _timeAgo(ts) {
+    const diff = Date.now() - new Date(ts).getTime();
+    const m = Math.floor(diff / 60000);
+    if (m < 2)   return 'just now';
+    if (m < 60)  return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24)  return `${h}h ago`;
+    const d = Math.floor(h / 24);
+    return d === 1 ? 'yesterday' : `${d}d ago`;
+  }
+
+  _buildMemoryBlock() {
+    const projectId = this._projectId;
+    if (!projectId || !this.db) return '';
+    const history = this.db.getConversations(projectId, 20);
+    const lines = history
+      .filter(c => c.sender === 'character' && c.message)
+      .slice(-6)
+      .map(c => {
+        const label = c.context ? `[${c.context}] ` : '';
+        const preview = c.message.slice(0, 120).replace(/\n/g, ' ');
+        return `- ${label}"${preview}" (${this._timeAgo(c.timestamp)})`;
+      });
+    if (!lines.length) return '';
+    return `\nYour recent observations — build on these, don't repeat verbatim:\n${lines.join('\n')}\n`;
+  }
+
   /**
    * Generate a spontaneous check-in message (character initiates).
    * Offers a read_file tool so the character can peek at hot files.
@@ -1288,18 +1330,6 @@ class AICharacter {
       } catch {}
     }
 
-    // Alfred's own recent observations — so he has memory and doesn't repeat himself
-    if (projectId) {
-      const history = this.db.getConversations(projectId, 20);
-      const alfredLines = history
-        .filter(c => c.sender === 'character')
-        .slice(-4)
-        .map(c => `  "${c.message}"`);
-      if (alfredLines.length > 0) {
-        contextLines.push(`What you've said recently (don't repeat these):\n${alfredLines.join('\n')}`);
-      }
-    }
-
     const contextStr = contextLines.length > 0
       ? `\n\nWhat you know right now:\n${contextLines.join('\n')}`
       : '';
@@ -1314,7 +1344,8 @@ class AICharacter {
 
     const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see "[checking in]", read the code diff and say something specific about what was actually built — not the number of commits, not the file names, not the save count. Those are noise. Read what the code does.\n\nOne or two sentences max. Speak to the thing itself: the feature, the fix, the system taking shape. If the Claude prompts are there, use them to understand intent. Make it feel like you\'ve been reading over his shoulder — because you have.' + visualPrompt;
 
-    const textContent = `${trigger}${contextStr}`;
+    const memory = this._buildMemoryBlock();
+    const textContent = `${trigger}${contextStr}${memory}`;
     const userContent = imageBase64
       ? [
           { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
@@ -1472,7 +1503,7 @@ class AICharacter {
    */
   async generateMusicComment({ title, source, onChunk }) {
     const client = this._getClient();
-    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [music], Ian is listening to something while coding. One sentence. Dry, butler-ish. Name the track or artist. No judgment, just observation. "I see we\'re debugging to Radiohead, sir." that energy.';
+    const system = CHARACTER_SYSTEM_PROMPT + '\n\nWhen you see [music], Ian is listening to something while coding. One or two sentences. Dry, butler-ish. You MUST open by naming the actual track or artist so it\'s clear you\'re commenting on the music — the listener should immediately know what you\'re referring to. "I see we\'re debugging to Radiohead, sir." or "Lofi hip-hop. A classic choice for pretending to focus." that energy. Never say "this" or "that" without naming it first.';
     const messages = [{
       role: 'user',
       content: `[music]\nPlaying on ${source}: ${title}`,

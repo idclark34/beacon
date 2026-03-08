@@ -143,6 +143,12 @@ function createTray() {
 
   const menu = Menu.buildFromTemplate([
     { label: 'Check in now', click: () => engine.triggerCheckIn() },
+    { label: 'Comment on music', click: () => {
+      const music = appTracker.getCurrentMusic();
+      if (!music) { console.log('[Tray] No music detected'); return; }
+      const projectId = activeProjectId;
+      engine._triggerMusicComment(projectId, music);
+    }},
     { label: 'Scan git now', click: async () => {
       for (const [projectId] of gitMonitor.watchers) {
         await gitMonitor.scanNow(projectId);
